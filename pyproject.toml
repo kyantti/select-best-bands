@@ -1,0 +1,16 @@
+[project]
+name = "select-best-bands"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "deap>=1.4.3",
+    "matplotlib>=3.10.3",
+    "pillow>=10.0.0",
+    "requests>=2.32.0",
+    "torch>=2.7.1",
+    "torchinfo>=1.8.0",
+    "torchvision>=0.22.1",
+    "tqdm>=4.67.1",
+]
