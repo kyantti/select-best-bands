@@ -10,7 +10,7 @@ select-best-bands/
 │   ├── going_modular/              # Essential PyTorch components
 │   │   ├── data_setup.py           # Data loading and memory management
 │   │   └── engine.py               # Training/testing functions
-│   ├── transfer_learning.py        # 🔥 ResNet50 fitness evaluation
+│   ├── transfer_learning.py        # ResNet50 fitness evaluation
 │   └── helper_functions.py         # Plotting and visualization
 ├── data/                           # Dataset directory
 │   └── interim/                    
