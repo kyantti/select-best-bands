@@ -37,7 +37,7 @@ def evaluate(individual):
             g_band,
             b_band,
             epochs=30,
-            batch_size=512,
+            batch_size=32,
             learning_rate=0.001
         )
 
@@ -128,7 +128,7 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, domain_min, domain_max):
     return (individual,)
 
 
-def main(seed=42, domain_min=0, domain_max=11):
+def main(seed=42, domain_min=0, domain_max=63):
     """
     Main function to run the genetic algorithm
     :param seed: Seed for the random number generator
@@ -142,16 +142,10 @@ def main(seed=42, domain_min=0, domain_max=11):
 
     # GPU Information
     if torch.cuda.is_available():
-        gpu_count = torch.cuda.device_count()
         current_gpu = torch.cuda.current_device()
         gpu_name = torch.cuda.get_device_name(current_gpu)
-        gpu_memory = torch.cuda.get_device_properties(current_gpu).total_memory / 1e9
-
         print("🚀 GPU Acceleration: ENABLED")
-        print(f"   Available GPUs: {gpu_count}")
         print(f"   Using GPU {current_gpu}: {gpu_name}")
-        print(f"   GPU Memory: {gpu_memory:.1f} GB")
-        print("   💡 Optimized for A100 performance")
     else:
         print("⚠️  GPU Acceleration: DISABLED (using CPU)")
 
@@ -197,12 +191,11 @@ def main(seed=42, domain_min=0, domain_max=11):
     )
     toolbox.register("select", tools.selTournament, tournsize=3)
 
-    population_size = 8
-    generations = 2
+    population_size = 50
+    generations = 100
 
     print(f"👥 Population size: {population_size}")
     print(f"🔄 Generations: {generations}")
-    print("🔄 Execution mode: SEQUENTIAL")
     print("🚀 Starting evolution...")
 
     pop = toolbox.population(n=population_size)
@@ -235,7 +228,7 @@ def main(seed=42, domain_min=0, domain_max=11):
     print(
         f"⏱️  Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)"
     )
-    print(f"🥇 Best individual (RGB bands): {list(hof[0])}")
+
     print(f"🎯 Best fitness (test accuracy): {hof[0].fitness.values[0]:.4f}")
     print(f"   Red band:   {hof[0][0]}")
     print(f"   Green band: {hof[0][1]}")
@@ -247,10 +240,7 @@ def main(seed=42, domain_min=0, domain_max=11):
     print("\n📊 Performance Statistics:")
     print(f"   Total evaluations: {total_evaluations}")
     print(f"   Average time per evaluation: {avg_eval_time:.1f} seconds")
-    print("   🔄 Execution mode: Sequential (single-threaded)")
-    if torch.cuda.is_available():
-        print("   🚀 GPU acceleration factor: ~3-5x faster than CPU")
-
+    
     return hof[0], hof[0].fitness.values[0]
 
 

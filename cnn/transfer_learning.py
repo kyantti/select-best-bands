@@ -7,10 +7,13 @@ for classifying fresh figs by toxin level: C0 (healthy), C1 (low toxin), C2 (med
 
 import torch
 import torchvision
+import os
 from torch import nn
 from torchvision import transforms
 from .util.engine import train
 from .util.data_setup import create_dataloaders_fast
+
+NUM_WORKERS = os.cpu_count() or 1  # Ensure it's always an int
 
 
 def setup_device():
@@ -70,7 +73,7 @@ def eval(
         b_band=b_band,
         transform=train_transforms,
         batch_size=batch_size,
-        num_workers=0,  # Use 0 to avoid multiprocessing issues during GA
+        num_workers=NUM_WORKERS,  # Use 0 to avoid multiprocessing issues during GA
     )
 
     # Setup ResNet50 model
