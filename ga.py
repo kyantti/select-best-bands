@@ -14,10 +14,12 @@ import time
 import numpy
 from deap import algorithms, base, creator, tools
 import torch
+import sys
 
 # Import our custom modules
 from cnn.util.data_setup import load_hypercubes_to_memory
 from cnn.transfer_learning import eval
+
 
 def evaluate(individual):
     """
@@ -33,12 +35,7 @@ def evaluate(individual):
         # Evaluate using our memory-based ResNet50 training with GPU optimization
         # The fitness function now uses the global in-memory hypercubes
         fitness = eval(
-            r_band,
-            g_band,
-            b_band,
-            epochs=30,
-            batch_size=32,
-            learning_rate=0.001
+            r_band, g_band, b_band, epochs=30, batch_size=256, learning_rate=0.001, verbose=False
         )
 
         print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
@@ -51,8 +48,8 @@ def evaluate(individual):
         # Clear GPU cache on error too
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        # Return poor fitness for failed evaluations
-        return (0.0,)
+        # End the program
+        sys.exit(1)
 
 
 def cx_blend_clamped(ind1, ind2, alpha, domain_min, domain_max):
@@ -135,24 +132,13 @@ def main(seed=42, domain_min=0, domain_max=63):
     :param domain_min: Minimum band index (default: 0)
     :param domain_max: Maximum band index (default: 447 for 448 bands)
     """
-    print("🧬 Starting Genetic Algorithm for Band Selection")
-    print("=" * 60)
+
     print(f"🎯 Optimizing RGB band selection from {domain_max + 1} total bands")
     print(f"🔢 Band range: {domain_min} to {domain_max}")
 
-    # GPU Information
-    if torch.cuda.is_available():
-        current_gpu = torch.cuda.current_device()
-        gpu_name = torch.cuda.get_device_name(current_gpu)
-        print("🚀 GPU Acceleration: ENABLED")
-        print(f"   Using GPU {current_gpu}: {gpu_name}")
-    else:
-        print("⚠️  GPU Acceleration: DISABLED (using CPU)")
-
     # Load data once before starting GA
     load_hypercubes_to_memory(
-        train_dir="data/processed/train",
-        test_dir="data/processed/test"
+        train_dir="data/processed/train", test_dir="data/processed/test"
     )
 
     random.seed(seed)
@@ -191,12 +177,8 @@ def main(seed=42, domain_min=0, domain_max=63):
     )
     toolbox.register("select", tools.selTournament, tournsize=3)
 
-    population_size = 50
-    generations = 100
-
-    print(f"👥 Population size: {population_size}")
-    print(f"🔄 Generations: {generations}")
-    print("🚀 Starting evolution...")
+    population_size = 25
+    generations = 50
 
     pop = toolbox.population(n=population_size)
     hof = tools.HallOfFame(1)
@@ -217,30 +199,16 @@ def main(seed=42, domain_min=0, domain_max=63):
         ngen=generations,
         stats=stats,
         halloffame=hof,
-        verbose=False,  # Disable verbose to avoid format errors
+        verbose=True,  # Enable verbose output
     )
 
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    print("\n🎉 Genetic Algorithm Complete!")
-    print("=" * 60)
     print(
         f"⏱️  Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)"
     )
 
-    print(f"🎯 Best fitness (test accuracy): {hof[0].fitness.values[0]:.4f}")
-    print(f"   Red band:   {hof[0][0]}")
-    print(f"   Green band: {hof[0][1]}")
-    print(f"   Blue band:  {hof[0][2]}")
-
-    # Performance statistics
-    total_evaluations = population_size * generations
-    avg_eval_time = elapsed_time / total_evaluations
-    print("\n📊 Performance Statistics:")
-    print(f"   Total evaluations: {total_evaluations}")
-    print(f"   Average time per evaluation: {avg_eval_time:.1f} seconds")
-    
     return hof[0], hof[0].fitness.values[0]
 
 

@@ -23,14 +23,7 @@ def setup_device():
     return device
 
 
-def eval(
-    r_band,
-    g_band,
-    b_band,
-    epochs = 30,
-    batch_size = 256,
-    learning_rate = 0.001
-):
+def eval(r_band, g_band, b_band, epochs=30, batch_size=256, learning_rate=0.001, verbose=False):
     """
     Fast evaluation of fitness using pre-loaded in-memory hypercubes.
 
@@ -39,7 +32,6 @@ def eval(
         epochs: Number of training epochs
         batch_size: Batch size for training
         learning_rate: Learning rate for optimizer
-        random_seed: Random seed for reproducible results
         verbose: Whether to print training progress
 
     Returns:
@@ -59,8 +51,11 @@ def eval(
     # Create transforms optimized for ResNet50
     train_transforms = transforms.Compose(
         [
-            transforms.Resize((224, 224)),  # ResNet50 input size
+            transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomRotation(20),
+            transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -88,14 +83,14 @@ def eval(
     # Replace the classifier layer with flatten, dense, and dropout layers
     num_features = model.fc.in_features
     num_classes = len(class_names) if class_names else 4  # Default to 4 classes
-    
+
     # Create a new classifier with dense and dropout layers
     # Note: ResNet already has global average pooling, so we don't need Flatten
     model.fc = nn.Sequential(  # type: ignore
         nn.Linear(num_features, 512),  # Dense layer
         nn.ReLU(),
         nn.Dropout(0.5),  # Dropout layer
-        nn.Linear(512, num_classes)  # Final classification layer
+        nn.Linear(512, num_classes),  # Final classification layer
     ).to(device)
 
     # Setup loss function and optimizer
@@ -111,6 +106,7 @@ def eval(
         loss_fn=loss_fn,
         epochs=epochs,
         device=device,
+        verbose=verbose,
     )
 
     # Save test acc - get the final epoch's test accuracy

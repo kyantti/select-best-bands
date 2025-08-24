@@ -132,6 +132,7 @@ def train(
     loss_fn: torch.nn.Module,
     epochs: int,
     device: torch.device,
+    verbose: bool = True,
 ) -> Dict[str, List]:
     """Trains and tests a PyTorch model.
 
@@ -149,6 +150,7 @@ def train(
     loss_fn: A PyTorch loss function to calculate loss on both datasets.
     epochs: An integer indicating how many epochs to train for.
     device: A target device to compute on (e.g. "cuda" or "cpu").
+    verbose: Whether to print training progress and show progress bar.
 
     Returns:
     A dictionary of training and testing loss as well as training and
@@ -170,8 +172,11 @@ def train(
     # Make sure model on target device
     model.to(device)
 
+    # Create iterator based on verbose setting
+    epoch_range = tqdm(range(epochs), disable=not verbose) if verbose else range(epochs)
+
     # Loop through training and testing steps for a number of epochs
-    for epoch in tqdm(range(epochs)):
+    for epoch in epoch_range:
         train_loss, train_acc = train_step(
             model=model,
             dataloader=train_dataloader,
@@ -183,14 +188,15 @@ def train(
             model=model, dataloader=test_dataloader, loss_fn=loss_fn, device=device
         )
 
-        # Print out what's happening
-        print(
-            f"Epoch: {epoch + 1} | "
-            f"train_loss: {train_loss:.4f} | "
-            f"train_acc: {train_acc:.4f} | "
-            f"test_loss: {test_loss:.4f} | "
-            f"test_acc: {test_acc:.4f}"
-        )
+        # Print out what's happening only if verbose
+        if verbose:
+            print(
+                f"Epoch: {epoch + 1} | "
+                f"train_loss: {train_loss:.4f} | "
+                f"train_acc: {train_acc:.4f} | "
+                f"test_loss: {test_loss:.4f} | "
+                f"test_acc: {test_acc:.4f}"
+            )
 
         # Update results dictionary
         results["train_loss"].append(train_loss)
