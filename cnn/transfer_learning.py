@@ -8,10 +8,14 @@ for classifying fresh figs by toxin level: C0 (healthy), C1 (low toxin), C2 (med
 import torch
 import torchvision
 import os
+import sys
+from pathlib import Path
 from torch import nn
 from torchvision import transforms
-from .util.engine import train
-from .util.data_setup import create_dataloaders_fast
+from cnn.util.engine import train
+from cnn.util.data_setup import create_dataloaders_fast
+from cnn.util.helper_functions import set_seeds
+from torchinfo import summary
 
 NUM_WORKERS = os.cpu_count() or 1  # Ensure it's always an int
 
@@ -23,39 +27,28 @@ def setup_device():
     return device
 
 
-def eval(r_band, g_band, b_band, epochs=30, batch_size=256, learning_rate=0.001, verbose=False):
+def setup_model(r_band, g_band, b_band, batch_size=256):
     """
-    Fast evaluation of fitness using pre-loaded in-memory hypercubes.
+    Setup the model, data loaders, and optimizer for training.
 
     Args:
         r_band, g_band, b_band: Band indices to evaluate
-        epochs: Number of training epochs
         batch_size: Batch size for training
-        learning_rate: Learning rate for optimizer
-        verbose: Whether to print training progress
 
     Returns:
-        float: Test accuracy (fitness value)
+        tuple: (model, train_dataloader, test_dataloader, optimizer, loss_fn, device)
     """
-
-    random_seed = 42
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Set random seeds for reproducibility
-    torch.manual_seed(random_seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(random_seed)
+    # Set seed
+    set_seeds()
 
     # Create transforms optimized for ResNet50
     train_transforms = transforms.Compose(
         [
-            transforms.Resize((224, 224)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5),
-            transforms.RandomRotation(20),
-            transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+            transforms.Resize((512, 256)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -71,37 +64,65 @@ def eval(r_band, g_band, b_band, epochs=30, batch_size=256, learning_rate=0.001,
         num_workers=NUM_WORKERS,  # Use 0 to avoid multiprocessing issues during GA
     )
 
-    # Setup ResNet50 model
-    weights = torchvision.models.ResNet50_Weights.IMAGENET1K_V2
-    model = torchvision.models.resnet50(weights=weights).to(device)
+    # Setup model
+    weights = torchvision.models.EfficientNet_B0_Weights.DEFAULT
+    model = torchvision.models.efficientnet_b0(weights=weights).to(device)
 
-    # Freeze early layers for faster training
-    for name, param in model.named_parameters():
-        if "layer4" not in name and "fc" not in name:
-            param.requires_grad = False
+    # Freeze all layers
+    for param in model.parameters():
+        param.requires_grad = False
 
-    # Replace the classifier layer with flatten, dense, and dropout layers
-    num_features = model.fc.in_features
-    num_classes = len(class_names) if class_names else 4  # Default to 4 classes
+    output_shape = len(class_names) if class_names is not None else 4
 
-    # Create a new classifier with dense and dropout layers
-    # Note: ResNet already has global average pooling, so we don't need Flatten
-    model.fc = nn.Sequential(  # type: ignore
-        nn.Linear(num_features, 512),  # Dense layer
-        nn.ReLU(),
-        nn.Dropout(0.5),  # Dropout layer
-        nn.Linear(512, num_classes),  # Final classification layer
+    # Recreate the classifier layer and seed it to the target device
+    model.classifier = torch.nn.Sequential(
+        torch.nn.Dropout(p=0.2, inplace=True),
+        torch.nn.Linear(
+            in_features=1280,
+            out_features=output_shape,  # same number of output units as our number of classes
+            bias=True,
+        ),
     ).to(device)
 
-    # Setup loss function and optimizer
+    # Setup loss function and optimizer (only optimize the new classifier layer)
+    # Define loss and optimizer
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
+    return model, train_dl, test_dl, optimizer, loss_fn, device
+
+
+def train_model(
+    model,
+    train_dataloader,
+    test_dataloader,
+    optimizer,
+    loss_fn,
+    device,
+    epochs=30,
+    verbose=False,
+):
+    """
+    Train the model and return the test accuracy.
+
+    Args:
+        model: The neural network model
+        train_dataloader: Training data loader
+        test_dataloader: Test data loader
+        optimizer: Optimizer for training
+        loss_fn: Loss function
+        device: Device to train on
+        epochs: Number of training epochs
+        verbose: Whether to print training progress
+
+    Returns:
+        float: Test accuracy (fitness value)
+    """
     # Train model
     results = train(
         model=model,
-        train_dataloader=train_dl,
-        test_dataloader=test_dl,
+        train_dataloader=train_dataloader,
+        test_dataloader=test_dataloader,
         optimizer=optimizer,
         loss_fn=loss_fn,
         epochs=epochs,
@@ -115,5 +136,31 @@ def eval(r_band, g_band, b_band, epochs=30, batch_size=256, learning_rate=0.001,
     # Clear GPU cache to prevent memory issues
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+    return test_acc
+
+
+def eval(r_band, g_band, b_band, epochs=30, batch_size=256, verbose=False):
+    """
+    Fast evaluation of fitness using pre-loaded in-memory hypercubes.
+
+    Args:
+        r_band, g_band, b_band: Band indices to evaluate
+        epochs: Number of training epochs
+        batch_size: Batch size for training
+        verbose: Whether to print training progress
+
+    Returns:
+        float: Test accuracy (fitness value)
+    """
+    # Setup model and data
+    model, train_dl, test_dl, optimizer, loss_fn, device = setup_model(
+        r_band, g_band, b_band, batch_size
+    )
+
+    # Train and get accuracy
+    test_acc = train_model(
+        model, train_dl, test_dl, optimizer, loss_fn, device, epochs, verbose
+    )
 
     return test_acc

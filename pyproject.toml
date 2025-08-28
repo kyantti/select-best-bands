@@ -8,6 +8,7 @@ dependencies = [
     "deap>=1.4.3",
     "matplotlib>=3.10.3",
     "numpy>=2.3.1",
+    "pandas>=2.3.2",
     "pillow>=10.0.0",
     "requests>=2.32.0",
     "scikit-learn>=1.7.1",

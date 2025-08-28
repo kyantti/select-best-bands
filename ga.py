@@ -16,9 +16,11 @@ from deap import algorithms, base, creator, tools
 import torch
 import sys
 
+from torchinfo import summary
+
 # Import our custom modules
 from cnn.util.data_setup import load_hypercubes_to_memory
-from cnn.transfer_learning import eval
+from cnn.transfer_learning import eval, setup_model
 
 
 def evaluate(individual):
@@ -32,10 +34,15 @@ def evaluate(individual):
     print(f"🔍 Evaluating bands [{r_band}, {g_band}, {b_band}]...")
 
     try:
-        # Evaluate using our memory-based ResNet50 training with GPU optimization
+        # Evaluate using our improved model architecture
         # The fitness function now uses the global in-memory hypercubes
         fitness = eval(
-            r_band, g_band, b_band, epochs=30, batch_size=256, learning_rate=0.001, verbose=False
+            r_band=r_band, 
+            g_band=g_band, 
+            b_band=b_band, 
+            epochs=30,  # More epochs for better accuracy
+            batch_size=512,  # Optimized for A100
+            verbose=True
         )
 
         print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
@@ -125,7 +132,7 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, domain_min, domain_max):
     return (individual,)
 
 
-def main(seed=42, domain_min=0, domain_max=63):
+def main(seed=123, domain_min=0, domain_max=31):
     """
     Main function to run the genetic algorithm
     :param seed: Seed for the random number generator
@@ -177,8 +184,8 @@ def main(seed=42, domain_min=0, domain_max=63):
     )
     toolbox.register("select", tools.selTournament, tournsize=3)
 
-    population_size = 25
-    generations = 50
+    population_size = 1
+    generations = 1
 
     pop = toolbox.population(n=population_size)
     hof = tools.HallOfFame(1)
@@ -199,7 +206,7 @@ def main(seed=42, domain_min=0, domain_max=63):
         ngen=generations,
         stats=stats,
         halloffame=hof,
-        verbose=True,  # Enable verbose output
+        verbose=True,
     )
 
     end_time = time.time()
@@ -214,3 +221,12 @@ def main(seed=42, domain_min=0, domain_max=63):
 
 if __name__ == "__main__":
     best_individual, best_fitness = main()
+    model = setup_model(r_band=30, g_band=20, b_band=10)[0]
+    summary(
+        model=model,
+        input_size=(256, 3, 224, 224),
+        col_names=["input_size", "output_size", "num_params", "trainable"],
+        col_width=20,
+        row_settings=["var_names"]
+    )
+
