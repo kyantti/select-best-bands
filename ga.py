@@ -19,7 +19,7 @@ import sys
 from torchinfo import summary
 
 # Import our custom modules
-from cnn.util.data_setup import load_hypercubes_to_memory
+from cnn.data_setup import load_hypercubes_to_memory
 from cnn.transfer_learning import eval, setup_model
 
 
