@@ -7,6 +7,7 @@ for toxin classification using ResNet50 transfer learning.
 
 import array
 import functools
+import multiprocessing
 import random
 from collections.abc import Sequence
 from itertools import repeat
@@ -15,15 +16,27 @@ import numpy
 from deap import algorithms, base, creator, tools
 import torch
 import sys
+import torchvision
 
-from torchinfo import summary
-
-# Import our custom modules
-from cnn.data_setup import load_hypercubes_to_memory
-from cnn.transfer_learning import eval, setup_model
+import cnn.data_setup
+import cnn.engine
 
 
-def evaluate(individual):
+# Define constants (ensure these are defined elsewhere or set here)
+IMAGE_HEIGHT = 64
+IMAGE_WIDTH = 128
+BATCH_SIZE = 256
+LEARNING_RATE = 1e-4
+NUM_EPOCHS = 20  # For GA, use 1 epoch for speed
+
+# Setup directories
+train_csv = "train_dataset.csv"
+test_csv = "test_dataset.csv"
+
+
+def evaluate(
+    individual, model, optimizer, loss_fn, device, train_transform, test_transform
+):
     """
     Generate RGB images from the individual and evaluate the model with the generated images
     :param individual: Individual to evaluate (3 band indices: [R, G, B])
@@ -34,16 +47,39 @@ def evaluate(individual):
     print(f"🔍 Evaluating bands [{r_band}, {g_band}, {b_band}]...")
 
     try:
-        # Evaluate using our improved model architecture
-        # The fitness function now uses the global in-memory hypercubes
-        fitness = eval(
-            r_band=r_band, 
-            g_band=g_band, 
-            b_band=b_band, 
-            epochs=30,  # More epochs for better accuracy
-            batch_size=512,  # Optimized for A100
-            verbose=True
+        # Set band indices for this individual
+        band_indices = [r_band, g_band, b_band]
+
+        # Create DataLoaders with help from data_setup.py
+        train_dataloader = cnn.data_setup.create_train_dataloader(
+            train_csv=train_csv,
+            band_indices=band_indices,
+            transform=train_transform,
+            batch_size=BATCH_SIZE,
+            num_workers=0,  # Ensure no subprocesses in Pool worker
         )
+
+        test_dataloader = cnn.data_setup.create_test_dataloader(
+            test_csv=test_csv,
+            band_indices=band_indices,
+            transform=test_transform,
+            batch_size=BATCH_SIZE,
+            num_workers=0,  # Ensure no subprocesses in Pool worker
+        )
+
+        # Setup training and save the results
+        results = cnn.engine.train(
+            model=model,
+            train_dataloader=train_dataloader,
+            test_dataloader=test_dataloader,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            epochs=NUM_EPOCHS,
+            device=device,
+        )
+
+        # Extract fitness (e.g., best test accuracy)
+        fitness = results["test_acc"][-1] if "test_acc" in results else 0.0
 
         print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
 
@@ -132,7 +168,7 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, domain_min, domain_max):
     return (individual,)
 
 
-def main(seed=123, domain_min=0, domain_max=31):
+def main(seed=123, domain_min=0, domain_max=447):
     """
     Main function to run the genetic algorithm
     :param seed: Seed for the random number generator
@@ -143,10 +179,62 @@ def main(seed=123, domain_min=0, domain_max=31):
     print(f"🎯 Optimizing RGB band selection from {domain_max + 1} total bands")
     print(f"🔢 Band range: {domain_min} to {domain_max}")
 
-    # Load data once before starting GA
-    load_hypercubes_to_memory(
-        train_dir="data/processed/train", test_dir="data/processed/test"
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+
+    # Setup target device and model inside main()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Create transforms
+    train_transform = torchvision.transforms.Compose(
+        [
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
+            torchvision.transforms.RandomHorizontalFlip(),
+            torchvision.transforms.RandomVerticalFlip(),
+            torchvision.transforms.RandomRotation(degrees=15),
+            torchvision.transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+            ),
+        ]
     )
+
+    test_transform = torchvision.transforms.Compose(
+        [
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
+            torchvision.transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+            ),
+        ]
+    )
+
+    # Model setup
+    weights = torchvision.models.ResNet50_Weights.DEFAULT
+    model = torchvision.models.resnet50(weights=weights).to(device)
+
+    # Freeze all parameters first
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # Unfreeze last two layers
+    for param in model.layer4.parameters():
+        param.requires_grad = True
+    for param in model.fc.parameters():
+        param.requires_grad = True
+
+    # Get the number of features from the last layer
+    in_features = model.fc.in_features
+
+    # Replace the final classifier with a simple linear layer for 4 classes
+    model.fc = torch.nn.Linear(in_features=in_features, out_features=4, bias=True).to(device)
+
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    # Create a pool of workers (adjust number based on GPU capacity)
+    num_workers = 12
 
     random.seed(seed)
 
@@ -154,6 +242,10 @@ def main(seed=123, domain_min=0, domain_max=31):
     creator.create("Individual", array.array, typecode="h", fitness=creator.FitnessMax)
 
     toolbox = base.Toolbox()
+
+    # Tell DEAP to use our pool for parallel evaluation
+    pool = multiprocessing.Pool(processes=num_workers)
+    toolbox.register("map", pool.map)
 
     # Attribute generator
     toolbox.register("attr_int", random.randint, domain_min, domain_max)
@@ -164,7 +256,19 @@ def main(seed=123, domain_min=0, domain_max=31):
     )
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-    toolbox.register("evaluate", functools.partial(evaluate))
+    # Pass model, optimizer, loss_fn, device, transforms to evaluate
+    toolbox.register(
+        "evaluate",
+        functools.partial(
+            evaluate,
+            model=model,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            device=device,
+            train_transform=train_transform,
+            test_transform=test_transform,
+        ),
+    )
     toolbox.register(
         "mate",
         lambda ind1, ind2: cx_blend_clamped(
@@ -184,8 +288,8 @@ def main(seed=123, domain_min=0, domain_max=31):
     )
     toolbox.register("select", tools.selTournament, tournsize=3)
 
-    population_size = 1
-    generations = 1
+    population_size = 24
+    generations = 50
 
     pop = toolbox.population(n=population_size)
     hof = tools.HallOfFame(1)
@@ -220,13 +324,5 @@ def main(seed=123, domain_min=0, domain_max=31):
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn", force=True)
     best_individual, best_fitness = main()
-    model = setup_model(r_band=30, g_band=20, b_band=10)[0]
-    summary(
-        model=model,
-        input_size=(256, 3, 224, 224),
-        col_names=["input_size", "output_size", "num_params", "trainable"],
-        col_width=20,
-        row_settings=["var_names"]
-    )
-

@@ -4,18 +4,22 @@ Contains functions for training and testing a PyTorch model.
 import torch
 
 from tqdm.auto import tqdm
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from torch.amp import GradScaler  # type: ignore
+
 
 def train_step(model: torch.nn.Module, 
                dataloader: torch.utils.data.DataLoader, 
                loss_fn: torch.nn.Module, 
                optimizer: torch.optim.Optimizer,
-               device: torch.device) -> Tuple[float, float]:
-    """Trains a PyTorch model for a single epoch.
+               device: torch.device,
+               scaler: Optional[torch.amp.GradScaler] = None) -> Tuple[float, float]: # type: ignore
+    """Trains a PyTorch model for a single epoch using Automatic Mixed Precision (AMP).
 
     Turns a target PyTorch model to training mode and then
     runs through all of the required training steps (forward
-    pass, loss calculation, optimizer step).
+    pass, loss calculation, optimizer step) using mixed precision
+    if a CUDA device is used.
 
     Args:
     model: A PyTorch model to be trained.
@@ -23,6 +27,7 @@ def train_step(model: torch.nn.Module,
     loss_fn: A PyTorch loss function to minimize.
     optimizer: A PyTorch optimizer to help minimize the loss function.
     device: A target device to compute on (e.g. "cuda" or "cpu").
+    scaler: An optional GradScaler for mixed precision training.
 
     Returns:
     A tuple of training loss and training accuracy metrics.
@@ -41,8 +46,10 @@ def train_step(model: torch.nn.Module,
         # Send data to target device
         X, y = X.to(device), y.to(device)
 
-        # 1. Forward pass
-        y_pred = model(X)
+        # 1. Forward pass with autocast
+        # Recommended - more explicit:
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device.type == "cuda")):
+            y_pred = model(X)
 
         # 2. Calculate  and accumulate loss
         loss = loss_fn(y_pred, y)
@@ -51,11 +58,18 @@ def train_step(model: torch.nn.Module,
         # 3. Optimizer zero grad
         optimizer.zero_grad()
 
-        # 4. Loss backward
-        loss.backward()
+        # 4. Loss backward with scaler
+        if scaler:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
-        # 5. Optimizer step
-        optimizer.step()
+        # 5. Optimizer step with scaler
+        if scaler:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
         # Calculate and accumulate accuracy metric across all batches
         y_pred_class = torch.argmax(torch.softmax(y_pred, dim=1), dim=1)
@@ -123,7 +137,7 @@ def train(model: torch.nn.Module,
           loss_fn: torch.nn.Module,
           epochs: int,
           device: torch.device) -> Dict[str, List]:
-    """Trains and tests a PyTorch model.
+    """Trains and tests a PyTorch model with optional mixed precision.
 
     Passes a target PyTorch models through train_step() and test_step()
     functions for a number of epochs, training and testing the model
@@ -163,6 +177,9 @@ def train(model: torch.nn.Module,
     
     # Make sure model on target device
     model.to(device)
+    
+    # Initialize GradScaler if device is CUDA
+    scaler = GradScaler(device="cuda") if device.type == "cuda" else None
 
     # Loop through training and testing steps for a number of epochs
     for epoch in tqdm(range(epochs)):
@@ -170,11 +187,12 @@ def train(model: torch.nn.Module,
                                           dataloader=train_dataloader,
                                           loss_fn=loss_fn,
                                           optimizer=optimizer,
-                                          device=device)
+                                          device=device,
+                                          scaler=scaler)
         test_loss, test_acc = test_step(model=model,
-          dataloader=test_dataloader,
-          loss_fn=loss_fn,
-          device=device)
+                                        dataloader=test_dataloader,
+                                        loss_fn=loss_fn,
+                                        device=device)
 
         # Print out what's happening
         print(
