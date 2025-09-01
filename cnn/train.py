@@ -10,23 +10,25 @@ import gc
 from torchinfo import summary
 from timeit import default_timer as timer
 
+
 # Setup hyperparameters
-NUM_EPOCHS = 20
-BATCH_SIZE = 64
+NUM_EPOCHS = 30
+BATCH_SIZE = 128
 LEARNING_RATE = 0.001
 IMAGE_HEIGHT = 64
 IMAGE_WIDTH = 128
 IMAGE_SIZE = (IMAGE_HEIGHT, IMAGE_WIDTH)
 
 # Setup band indices
-BAND_INDICES = [37, 112, 224]
+BAND_INDICES = [93, 158, 416]
 
 # Setup directories
 train_csv = "train_dataset.csv"
 test_csv = "test_dataset.csv"
 
-# Setup target device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Setup target device with id
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+
 
 # Create transforms
 train_transform = torchvision.transforms.Compose(
@@ -58,6 +60,7 @@ train_dataloader = data_setup.create_train_dataloader(
     band_indices=BAND_INDICES,
     transform=train_transform,
     batch_size=BATCH_SIZE,
+    num_workers=0,
 )
 
 test_dataloader = data_setup.create_test_dataloader(
@@ -65,6 +68,7 @@ test_dataloader = data_setup.create_test_dataloader(
     band_indices=BAND_INDICES,
     transform=test_transform,
     batch_size=BATCH_SIZE,
+    num_workers=0,
 )
 
 # Get the length of class_names (one output unit for each class)
@@ -80,6 +84,7 @@ for param in model.parameters():
 
 for param in model.layer4.parameters():
     param.requires_grad = True
+
 for param in model.fc.parameters():
     param.requires_grad = True
 

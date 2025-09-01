@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import os
 from tqdm import tqdm
+from typing import Optional
 from torchvision import transforms
 from torch.utils.data import DataLoader
 
@@ -16,8 +17,8 @@ class HypercubeDataset(Dataset):
     Custom PyTorch Dataset for loading pre-processed hyperspectral data.
 
     This class is designed to:
-    1. Read a CSV manifest file containing filepaths and labels.
-    2. Pre-load all hypercube data (.npy files) into RAM for fast access during training.
+    1. Accept pre-loaded hypercube data and labels directly, OR
+    2. Read a CSV manifest file containing filepaths and labels and load data.
     3. For a given sample, extract three specified bands to form an RGB-like image.
     4. Apply transformations (e.g., from torchvision) to the resulting image.
 
@@ -25,37 +26,59 @@ class HypercubeDataset(Dataset):
     contain NumPy arrays with a dtype of `uint8` and shape (H, W, C).
     """
 
-    def __init__(self, csv_file, band_indices, transform=None):
+    def __init__(self, csv_file=None, band_indices=None, transform=None, 
+                 data_samples=None, labels=None):
         """
         Args:
-            csv_file (string): Path to the csv file with 'filepath' and 'label' columns.
+            csv_file (string, optional): Path to the csv file with 'filepath' and 'label' columns.
+                                       Used only if data_samples and labels are None.
             band_indices (list or tuple of 3 int): The indices of the three bands
                                                    to use for the R, G, and B channels.
             transform (callable, optional): A function/transform from torchvision
                                             to be applied on a sample.
+            data_samples (list, optional): Pre-loaded list of hypercube arrays.
+                                         If provided, csv_file is ignored.
+            labels (list, optional): Pre-loaded list of labels corresponding to data_samples.
+                                   If provided, csv_file is ignored.
         """
         # --- 1. Store Initialization Arguments ---
         self.band_indices = band_indices
         self.transform = transform
 
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"The specified CSV file was not found: {csv_file}")
-        if len(band_indices) != 3:
+        if band_indices is not None and len(band_indices) != 3:
             raise ValueError(
                 "`band_indices` must be a list or tuple of exactly 3 integers."
             )
 
-        # --- 2. Load Annotations and Pre-load Data into RAM ---
-        annotations = pd.read_csv(csv_file)
+        # --- 2. Use pre-loaded data OR load from CSV ---
+        if data_samples is not None and labels is not None:
+            # Use pre-loaded data
+            if len(data_samples) != len(labels):
+                raise ValueError("data_samples and labels must have the same length.")
+            
+            self.data_samples = data_samples
+            self.labels = labels
+            print(f"Dataset initialized with pre-loaded data. Total samples: {len(self.labels)}")
+            
+        elif csv_file is not None:
+            # Load from CSV file (original behavior)
+            if not os.path.exists(csv_file):
+                raise FileNotFoundError(f"The specified CSV file was not found: {csv_file}")
+            
+            annotations = pd.read_csv(csv_file)
+            self.data_samples = []
+            print(f"Initializing dataset from {csv_file}...")
+            for fpath in tqdm(annotations["filepath"], desc="Loading hypercubes into RAM"):
+                hypercube = np.load(fpath)
+                self.data_samples.append(hypercube)
 
-        self.data_samples = []
-        print(f"Initializing dataset from {csv_file}...")
-        for fpath in tqdm(annotations["filepath"], desc="Loading hypercubes into RAM"):
-            hypercube = np.load(fpath)
-            self.data_samples.append(hypercube)
-
-        self.labels = annotations["label"].tolist()
-        print(f"Dataset successfully loaded. Total samples: {len(self.labels)}")
+            self.labels = annotations["label"].tolist()
+            print(f"Dataset successfully loaded. Total samples: {len(self.labels)}")
+            
+        else:
+            raise ValueError(
+                "Either provide csv_file, or both data_samples and labels."
+            )
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -78,7 +101,16 @@ class HypercubeDataset(Dataset):
 
         # --- 2. Extract Bands to Create an RGB-like Image ---
         # This creates a (Height, Width, 3) NumPy array of dtype uint8.
-        rgb_image = hypercube[:, :, self.band_indices]
+        if self.band_indices is not None:
+            rgb_image = hypercube[:, :, self.band_indices]
+        else:
+            # If no band_indices specified, assume hypercube already has 3 channels
+            if hypercube.shape[2] != 3:
+                raise ValueError(
+                    f"When band_indices is None, hypercube must have exactly 3 channels, "
+                    f"but got {hypercube.shape[2]} channels."
+                )
+            rgb_image = hypercube
 
         # --- 3. Apply Transformations ---
         # The `transform` pipeline is crucial. `transforms.ToTensor()` will convert
@@ -99,18 +131,77 @@ class HypercubeDataset(Dataset):
         """Returns the list of labels for all samples in the dataset."""
         return self.labels
 
+    def update_band_indices(self, new_band_indices):
+        """
+        Update the band indices for RGB extraction.
+        
+        Args:
+            new_band_indices (list or tuple of 3 int): New band indices to use.
+        """
+        if len(new_band_indices) != 3:
+            raise ValueError(
+                "`new_band_indices` must be a list or tuple of exactly 3 integers."
+            )
+        self.band_indices = new_band_indices
+
+
+def load_hypercubes_from_csv(csv_file):
+    """
+    Utility function to load all hypercubes from a CSV file into memory.
+    
+    Args:
+        csv_file (str): Path to CSV file with 'filepath' and 'label' columns.
+        
+    Returns:
+        tuple: (data_samples, labels) where data_samples is a list of numpy arrays
+               and labels is a list of corresponding labels.
+    """
+    if not os.path.exists(csv_file):
+        raise FileNotFoundError(f"The specified CSV file was not found: {csv_file}")
+    
+    annotations = pd.read_csv(csv_file)
+    data_samples = []
+    
+    print(f"Loading hypercubes from {csv_file}...")
+    for fpath in tqdm(annotations["filepath"], desc="Loading hypercubes into RAM"):
+        hypercube = np.load(fpath)
+        data_samples.append(hypercube)
+    
+    labels = annotations["label"].tolist()
+    print(f"Successfully loaded {len(labels)} hypercubes into memory.")
+    
+    return data_samples, labels
+
 
 def create_train_dataloader(
-    train_csv: str,
-    band_indices: list[int],
-    transform: transforms.Compose,
-    batch_size: int,
+    train_csv: Optional[str] = None,
+    band_indices: Optional[list[int]] = None,
+    transform: Optional[transforms.Compose] = None,
+    batch_size: int = 32,
     num_workers: int = NUM_WORKERS,
+    data_samples: Optional[list] = None,
+    labels: Optional[list[int]] = None,
 ):
-    # Use ImageFolder to create dataset(s)
-    train_data = HypercubeDataset(train_csv, band_indices, transform=transform)
+    """
+    Create train dataloader with either CSV file or pre-loaded data.
+    
+    Args:
+        train_csv: Path to CSV file (used if data_samples/labels are None)
+        band_indices: List of 3 band indices for RGB channels
+        transform: Torchvision transforms
+        batch_size: Batch size for dataloader
+        num_workers: Number of worker processes
+        data_samples: Pre-loaded hypercube data (optional)
+        labels: Pre-loaded labels (optional)
+    """
+    train_data = HypercubeDataset(
+        csv_file=train_csv,
+        band_indices=band_indices, 
+        transform=transform,
+        data_samples=data_samples,
+        labels=labels
+    )
 
-    # Turn images into data loaders
     train_dataloader = DataLoader(
         train_data,
         batch_size=batch_size,
@@ -119,17 +210,39 @@ def create_train_dataloader(
         pin_memory=True,
     )
 
+    print("Band indices for training dataloader:", band_indices)
+
     return train_dataloader
 
 
 def create_test_dataloader(
-    test_csv: str,
-    band_indices: list[int],
-    transform: transforms.Compose,
-    batch_size: int,
+    test_csv: Optional[str] = None,
+    band_indices: Optional[list[int]] = None,
+    transform: Optional[transforms.Compose] = None,
+    batch_size: int = 32,
     num_workers: int = NUM_WORKERS,
+    data_samples: Optional[list] = None,
+    labels: Optional[list] = None,
 ):
-    test_data = HypercubeDataset(test_csv, band_indices, transform=transform)
+    """
+    Create test dataloader with either CSV file or pre-loaded data.
+    
+    Args:
+        test_csv: Path to CSV file (used if data_samples/labels are None)
+        band_indices: List of 3 band indices for RGB channels
+        transform: Torchvision transforms
+        batch_size: Batch size for dataloader
+        num_workers: Number of worker processes
+        data_samples: Pre-loaded hypercube data (optional)
+        labels: Pre-loaded labels (optional)
+    """
+    test_data = HypercubeDataset(
+        csv_file=test_csv,
+        band_indices=band_indices,
+        transform=transform,
+        data_samples=data_samples,
+        labels=labels
+    )
 
     test_dataloader = DataLoader(
         test_data,
@@ -138,5 +251,7 @@ def create_test_dataloader(
         num_workers=num_workers,
         pin_memory=True,
     )
+
+    print("Band indices for test dataloader:", band_indices)
 
     return test_dataloader

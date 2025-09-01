@@ -209,5 +209,10 @@ def train(model: torch.nn.Module,
         results["test_loss"].append(test_loss)
         results["test_acc"].append(test_acc)
 
+
+    # Clear CUDA cache
+    if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     # Return the filled results at the end of the epochs
     return results

@@ -17,6 +17,7 @@ from deap import algorithms, base, creator, tools
 import torch
 import sys
 import torchvision
+from timeit import default_timer as timer
 
 import cnn.data_setup
 import cnn.engine
@@ -25,9 +26,9 @@ import cnn.engine
 # Define constants (ensure these are defined elsewhere or set here)
 IMAGE_HEIGHT = 64
 IMAGE_WIDTH = 128
-BATCH_SIZE = 256
-LEARNING_RATE = 1e-4
-NUM_EPOCHS = 20  # For GA, use 1 epoch for speed
+BATCH_SIZE = 128
+LEARNING_RATE = 0.001
+NUM_EPOCHS = 30  # For GA, use 1 epoch for speed
 
 # Setup directories
 train_csv = "train_dataset.csv"
@@ -35,37 +36,46 @@ test_csv = "test_dataset.csv"
 
 
 def evaluate(
-    individual, model, optimizer, loss_fn, device, train_transform, test_transform
+    individual, model, optimizer, loss_fn, device, train_transform, test_transform,
+    train_data_samples, train_labels, test_data_samples, test_labels
 ):
     """
     Generate RGB images from the individual and evaluate the model with the generated images
     :param individual: Individual to evaluate (3 band indices: [R, G, B])
+    :param train_data_samples: Pre-loaded training hypercube data
+    :param train_labels: Pre-loaded training labels
+    :param test_data_samples: Pre-loaded test hypercube data  
+    :param test_labels: Pre-loaded test labels
     :return: Fitness of the individual (test accuracy)
     """
     # Debug output to track progress
     r_band, g_band, b_band = int(individual[0]), int(individual[1]), int(individual[2])
-    print(f"🔍 Evaluating bands [{r_band}, {g_band}, {b_band}]...")
 
     try:
         # Set band indices for this individual
         band_indices = [r_band, g_band, b_band]
 
-        # Create DataLoaders with help from data_setup.py
+        # Create DataLoaders with pre-loaded data
         train_dataloader = cnn.data_setup.create_train_dataloader(
-            train_csv=train_csv,
             band_indices=band_indices,
             transform=train_transform,
             batch_size=BATCH_SIZE,
             num_workers=0,  # Ensure no subprocesses in Pool worker
+            data_samples=train_data_samples,
+            labels=train_labels,
         )
 
         test_dataloader = cnn.data_setup.create_test_dataloader(
-            test_csv=test_csv,
             band_indices=band_indices,
             transform=test_transform,
             batch_size=BATCH_SIZE,
             num_workers=0,  # Ensure no subprocesses in Pool worker
+            data_samples=test_data_samples,
+            labels=test_labels,
         )
+
+        # Start the timer
+        start_time = timer()
 
         # Setup training and save the results
         results = cnn.engine.train(
@@ -78,10 +88,14 @@ def evaluate(
             device=device,
         )
 
+        # End the timer and print out how long it took
+        end_time = timer()
+        print(f"[INFO] Total training time: {end_time - start_time:.3f} seconds")
+
         # Extract fitness (e.g., best test accuracy)
         fitness = results["test_acc"][-1] if "test_acc" in results else 0.0
 
-        print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
+        #print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
 
         # DEAP expects a tuple
         return (fitness,)
@@ -168,13 +182,15 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, domain_min, domain_max):
     return (individual,)
 
 
-def main(seed=123, domain_min=0, domain_max=447):
+def main(seed):
     """
-    Main function to run the genetic algorithm
+    Main function to run the genetic algorithm with pre-loaded hypercubes
     :param seed: Seed for the random number generator
     :param domain_min: Minimum band index (default: 0)
     :param domain_max: Maximum band index (default: 447 for 448 bands)
     """
+    domain_min=0
+    domain_max=447
 
     print(f"🎯 Optimizing RGB band selection from {domain_max + 1} total bands")
     print(f"🔢 Band range: {domain_min} to {domain_max}")
@@ -182,8 +198,16 @@ def main(seed=123, domain_min=0, domain_max=447):
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
 
-    # Setup target device and model inside main()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # === PRE-LOAD ALL HYPERCUBES ONCE ===
+    print("📊 Pre-loading hypercube data...")
+    train_data_samples, train_labels = cnn.data_setup.load_hypercubes_from_csv(
+        train_csv
+    )
+    test_data_samples, test_labels = cnn.data_setup.load_hypercubes_from_csv(test_csv)
+    print("✅ All hypercubes loaded into memory!")
+
+    # Setup first device available with enough memory
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     # Create transforms
     train_transform = torchvision.transforms.Compose(
@@ -227,14 +251,13 @@ def main(seed=123, domain_min=0, domain_max=447):
     in_features = model.fc.in_features
 
     # Replace the final classifier with a simple linear layer for 4 classes
-    model.fc = torch.nn.Linear(in_features=in_features, out_features=4, bias=True).to(device)
+    model.fc = torch.nn.Linear(in_features=in_features, out_features=4, bias=True).to(
+        device
+    )
 
     loss_fn = torch.nn.CrossEntropyLoss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
-    # Create a pool of workers (adjust number based on GPU capacity)
-    num_workers = 12
 
     random.seed(seed)
 
@@ -244,8 +267,9 @@ def main(seed=123, domain_min=0, domain_max=447):
     toolbox = base.Toolbox()
 
     # Tell DEAP to use our pool for parallel evaluation
-    pool = multiprocessing.Pool(processes=num_workers)
-    toolbox.register("map", pool.map)
+    #pool = multiprocessing.Pool(processes=num_workers)
+    #toolbox.register("map", pool.map)
+    #num_workers = 1
 
     # Attribute generator
     toolbox.register("attr_int", random.randint, domain_min, domain_max)
@@ -256,7 +280,7 @@ def main(seed=123, domain_min=0, domain_max=447):
     )
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-    # Pass model, optimizer, loss_fn, device, transforms to evaluate
+    # Pass pre-loaded data along with other parameters to evaluate
     toolbox.register(
         "evaluate",
         functools.partial(
@@ -267,6 +291,10 @@ def main(seed=123, domain_min=0, domain_max=447):
             device=device,
             train_transform=train_transform,
             test_transform=test_transform,
+            train_data_samples=train_data_samples,
+            train_labels=train_labels,
+            test_data_samples=test_data_samples,
+            test_labels=test_labels,
         ),
     )
     toolbox.register(
@@ -288,8 +316,8 @@ def main(seed=123, domain_min=0, domain_max=447):
     )
     toolbox.register("select", tools.selTournament, tournsize=3)
 
-    population_size = 24
-    generations = 50
+    population_size = 4
+    generations = 3
 
     pop = toolbox.population(n=population_size)
     hof = tools.HallOfFame(1)
@@ -320,9 +348,9 @@ def main(seed=123, domain_min=0, domain_max=447):
         f"⏱️  Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)"
     )
 
-    return hof[0], hof[0].fitness.values[0]
+    print("🏆 Best individual is:", hof[0])
+    print("🏆 Best fitness is:", hof[0].fitness.values[0])
 
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn", force=True)
-    best_individual, best_fitness = main()
+    main(64)
