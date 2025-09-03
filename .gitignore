@@ -29,8 +29,7 @@ ENV/
 # *.pkl
 # *.joblib
 
-# Logs and temporary files
-*.log
+# Temporary files
 .DS_Store
 Thumbs.db
 

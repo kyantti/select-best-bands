@@ -7,7 +7,6 @@ for toxin classification using ResNet50 transfer learning.
 
 import array
 import functools
-import multiprocessing
 import random
 from collections.abc import Sequence
 from itertools import repeat
@@ -23,28 +22,32 @@ import cnn.data_setup
 import cnn.engine
 
 
-# Define constants (ensure these are defined elsewhere or set here)
 IMAGE_HEIGHT = 64
 IMAGE_WIDTH = 128
-BATCH_SIZE = 128
+BATCH_SIZE = 32
 LEARNING_RATE = 0.001
-NUM_EPOCHS = 30  # For GA, use 1 epoch for speed
+NUM_EPOCHS = 50
 
-# Setup directories
 train_csv = "train_dataset.csv"
 test_csv = "test_dataset.csv"
 
 
 def evaluate(
-    individual, model, optimizer, loss_fn, device, train_transform, test_transform,
-    train_data_samples, train_labels, test_data_samples, test_labels
+    individual,
+    device,
+    train_transform,
+    test_transform,
+    train_data_samples,
+    train_labels,
+    test_data_samples,
+    test_labels,
 ):
     """
     Generate RGB images from the individual and evaluate the model with the generated images
     :param individual: Individual to evaluate (3 band indices: [R, G, B])
     :param train_data_samples: Pre-loaded training hypercube data
     :param train_labels: Pre-loaded training labels
-    :param test_data_samples: Pre-loaded test hypercube data  
+    :param test_data_samples: Pre-loaded test hypercube data
     :param test_labels: Pre-loaded test labels
     :return: Fitness of the individual (test accuracy)
     """
@@ -74,6 +77,26 @@ def evaluate(
             labels=test_labels,
         )
 
+        # Model setup (fresh for each individual)
+        weights = torchvision.models.ResNet50_Weights.DEFAULT
+        model = torchvision.models.resnet50(weights=weights).to(device)
+
+        # Freeze all parameters first
+        for param in model.parameters():
+            param.requires_grad = False
+
+        # Unfreeze last two layers
+        for param in model.layer4.parameters():
+            param.requires_grad = True
+        for param in model.fc.parameters():
+            param.requires_grad = True
+
+        in_features = model.fc.in_features
+        model.fc = torch.nn.Linear(in_features=in_features, out_features=4, bias=True).to(device)
+
+        loss_fn = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
         # Start the timer
         start_time = timer()
 
@@ -95,7 +118,7 @@ def evaluate(
         # Extract fitness (e.g., best test accuracy)
         fitness = results["test_acc"][-1] if "test_acc" in results else 0.0
 
-        #print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
+        print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
 
         # DEAP expects a tuple
         return (fitness,)
@@ -183,27 +206,24 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, domain_min, domain_max):
 
 
 def main(seed):
-    """
-    Main function to run the genetic algorithm with pre-loaded hypercubes
-    :param seed: Seed for the random number generator
-    :param domain_min: Minimum band index (default: 0)
-    :param domain_max: Maximum band index (default: 447 for 448 bands)
-    """
-    domain_min=0
-    domain_max=447
+    domain_min = 0
+    domain_max = 447
 
     print(f"🎯 Optimizing RGB band selection from {domain_max + 1} total bands")
+
     print(f"🔢 Band range: {domain_min} to {domain_max}")
 
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
 
-    # === PRE-LOAD ALL HYPERCUBES ONCE ===
     print("📊 Pre-loading hypercube data...")
+
     train_data_samples, train_labels = cnn.data_setup.load_hypercubes_from_csv(
         train_csv
     )
+
     test_data_samples, test_labels = cnn.data_setup.load_hypercubes_from_csv(test_csv)
+
     print("✅ All hypercubes loaded into memory!")
 
     # Setup first device available with enough memory
@@ -233,61 +253,30 @@ def main(seed):
         ]
     )
 
-    # Model setup
-    weights = torchvision.models.ResNet50_Weights.DEFAULT
-    model = torchvision.models.resnet50(weights=weights).to(device)
-
-    # Freeze all parameters first
-    for param in model.parameters():
-        param.requires_grad = False
-
-    # Unfreeze last two layers
-    for param in model.layer4.parameters():
-        param.requires_grad = True
-    for param in model.fc.parameters():
-        param.requires_grad = True
-
-    # Get the number of features from the last layer
-    in_features = model.fc.in_features
-
-    # Replace the final classifier with a simple linear layer for 4 classes
-    model.fc = torch.nn.Linear(in_features=in_features, out_features=4, bias=True).to(
-        device
-    )
-
-    loss_fn = torch.nn.CrossEntropyLoss()
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
     random.seed(seed)
 
     creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-    creator.create("Individual", array.array, typecode="h", fitness=creator.FitnessMax)
+    creator.create("Individual", array.array, typecode="h", fitness=creator.FitnessMax) # type: ignore
 
     toolbox = base.Toolbox()
 
     # Tell DEAP to use our pool for parallel evaluation
-    #pool = multiprocessing.Pool(processes=num_workers)
-    #toolbox.register("map", pool.map)
-    #num_workers = 1
+    # pool = multiprocessing.Pool(processes=num_workers)
+    # toolbox.register("map", pool.map)
+    # num_workers = 1
 
     # Attribute generator
     toolbox.register("attr_int", random.randint, domain_min, domain_max)
 
     # Structure initializers
-    toolbox.register(
-        "individual", tools.initRepeat, creator.Individual, toolbox.attr_int, 3
-    )
-    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, 3) # type: ignore
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual) # type: ignore
 
     # Pass pre-loaded data along with other parameters to evaluate
     toolbox.register(
         "evaluate",
         functools.partial(
             evaluate,
-            model=model,
-            optimizer=optimizer,
-            loss_fn=loss_fn,
             device=device,
             train_transform=train_transform,
             test_transform=test_transform,
@@ -316,10 +305,10 @@ def main(seed):
     )
     toolbox.register("select", tools.selTournament, tournsize=3)
 
-    population_size = 4
-    generations = 3
+    population_size = 20
+    generations = 50
 
-    pop = toolbox.population(n=population_size)
+    pop = toolbox.population(n=population_size) # type: ignore
     hof = tools.HallOfFame(1)
     stats = tools.Statistics(lambda ind: ind.fitness.values)
     stats.register("avg", numpy.mean)
@@ -345,7 +334,7 @@ def main(seed):
     elapsed_time = end_time - start_time
 
     print(
-        f"⏱️  Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)"
+        f"⏱️ Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)"
     )
 
     print("🏆 Best individual is:", hof[0])
