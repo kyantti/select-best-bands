@@ -3,8 +3,8 @@ Trains a PyTorch image classification model using device-agnostic code.
 """
 
 import torch
+import engine2
 import data_setup
-import engine
 import torchvision
 import gc
 from torchinfo import summary
@@ -12,15 +12,15 @@ from timeit import default_timer as timer
 
 
 # Setup hyperparameters
-NUM_EPOCHS = 30
-BATCH_SIZE = 128
+NUM_EPOCHS = 50
+BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 IMAGE_HEIGHT = 64
 IMAGE_WIDTH = 128
 IMAGE_SIZE = (IMAGE_HEIGHT, IMAGE_WIDTH)
 
 # Setup band indices
-BAND_INDICES = [93, 158, 416]
+BAND_INDICES = [226, 101, 369]
 
 # Setup directories
 train_csv = "train_dataset.csv"
@@ -120,7 +120,7 @@ summary(
 start_time = timer()
 
 # Setup training and save the results
-results = engine.train(
+results = engine2.train(
     model=model,
     train_dataloader=train_dataloader,
     test_dataloader=test_dataloader,
@@ -128,6 +128,8 @@ results = engine.train(
     loss_fn=loss_fn,
     epochs=NUM_EPOCHS,
     device=device,
+    verbose=True,
+    num_classes=4,
 )
 
 # End the timer and print out how long it took

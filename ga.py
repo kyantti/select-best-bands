@@ -66,6 +66,7 @@ def evaluate(
             num_workers=0,  # Ensure no subprocesses in Pool worker
             data_samples=train_data_samples,
             labels=train_labels,
+            verbose=False
         )
 
         test_dataloader = cnn.data_setup.create_test_dataloader(
@@ -75,6 +76,7 @@ def evaluate(
             num_workers=0,  # Ensure no subprocesses in Pool worker
             data_samples=test_data_samples,
             labels=test_labels,
+            verbose=False
         )
 
         # Model setup (fresh for each individual)
@@ -108,6 +110,7 @@ def evaluate(
             optimizer=optimizer,
             loss_fn=loss_fn,
             epochs=NUM_EPOCHS,
+            verbose=False,
             device=device,
         )
 
@@ -118,7 +121,7 @@ def evaluate(
         # Extract fitness (e.g., best test accuracy)
         fitness = results["test_acc"][-1] if "test_acc" in results else 0.0
 
-        print(f"✅ Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
+        print(f"Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
 
         # DEAP expects a tuple
         return (fitness,)

@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 import os
-from tqdm import tqdm
+# from tqdm import tqdm
 from typing import Optional
 from torchvision import transforms
 from torch.utils.data import DataLoader
@@ -27,7 +27,7 @@ class HypercubeDataset(Dataset):
     """
 
     def __init__(self, csv_file=None, band_indices=None, transform=None, 
-                 data_samples=None, labels=None):
+                 data_samples=None, labels=None, verbose: bool = False):
         """
         Args:
             csv_file (string, optional): Path to the csv file with 'filepath' and 'label' columns.
@@ -40,10 +40,12 @@ class HypercubeDataset(Dataset):
                                          If provided, csv_file is ignored.
             labels (list, optional): Pre-loaded list of labels corresponding to data_samples.
                                    If provided, csv_file is ignored.
+            verbose (bool, optional): If True, prints additional information during initialization.
         """
         # --- 1. Store Initialization Arguments ---
         self.band_indices = band_indices
         self.transform = transform
+        self.verbose = verbose
 
         if band_indices is not None and len(band_indices) != 3:
             raise ValueError(
@@ -58,7 +60,8 @@ class HypercubeDataset(Dataset):
             
             self.data_samples = data_samples
             self.labels = labels
-            print(f"Dataset initialized with pre-loaded data. Total samples: {len(self.labels)}")
+            if self.verbose:
+                print(f"Dataset initialized with pre-loaded data. Total samples: {len(self.labels)}")
             
         elif csv_file is not None:
             # Load from CSV file (original behavior)
@@ -67,13 +70,14 @@ class HypercubeDataset(Dataset):
             
             annotations = pd.read_csv(csv_file)
             self.data_samples = []
-            print(f"Initializing dataset from {csv_file}...")
-            for fpath in tqdm(annotations["filepath"], desc="Loading hypercubes into RAM"):
+            if self.verbose:
+                print(f"Initializing dataset from {csv_file}...")
+            for fpath in annotations["filepath"]:  # tqdm removed
                 hypercube = np.load(fpath)
                 self.data_samples.append(hypercube)
-
             self.labels = annotations["label"].tolist()
-            print(f"Dataset successfully loaded. Total samples: {len(self.labels)}")
+            if self.verbose:
+                print(f"Dataset successfully loaded. Total samples: {len(self.labels)}")
             
         else:
             raise ValueError(
@@ -145,12 +149,13 @@ class HypercubeDataset(Dataset):
         self.band_indices = new_band_indices
 
 
-def load_hypercubes_from_csv(csv_file):
+def load_hypercubes_from_csv(csv_file, verbose: bool = False):
     """
     Utility function to load all hypercubes from a CSV file into memory.
     
     Args:
         csv_file (str): Path to CSV file with 'filepath' and 'label' columns.
+        verbose (bool, optional): If True, prints additional information during loading.
         
     Returns:
         tuple: (data_samples, labels) where data_samples is a list of numpy arrays
@@ -161,15 +166,14 @@ def load_hypercubes_from_csv(csv_file):
     
     annotations = pd.read_csv(csv_file)
     data_samples = []
-    
-    print(f"Loading hypercubes from {csv_file}...")
-    for fpath in tqdm(annotations["filepath"], desc="Loading hypercubes into RAM"):
+    if verbose:
+        print(f"Loading hypercubes from {csv_file}...")
+    for fpath in annotations["filepath"]:  # tqdm removed
         hypercube = np.load(fpath)
         data_samples.append(hypercube)
-    
     labels = annotations["label"].tolist()
-    print(f"Successfully loaded {len(labels)} hypercubes into memory.")
-    
+    if verbose:
+        print(f"Successfully loaded {len(labels)} hypercubes into memory.")
     return data_samples, labels
 
 
@@ -181,6 +185,7 @@ def create_train_dataloader(
     num_workers: int = NUM_WORKERS,
     data_samples: Optional[list] = None,
     labels: Optional[list[int]] = None,
+    verbose: bool = False,
 ):
     """
     Create train dataloader with either CSV file or pre-loaded data.
@@ -193,13 +198,15 @@ def create_train_dataloader(
         num_workers: Number of worker processes
         data_samples: Pre-loaded hypercube data (optional)
         labels: Pre-loaded labels (optional)
+        verbose: If True, prints additional information during dataloader creation.
     """
     train_data = HypercubeDataset(
         csv_file=train_csv,
         band_indices=band_indices, 
         transform=transform,
         data_samples=data_samples,
-        labels=labels
+        labels=labels,
+        verbose=verbose
     )
 
     train_dataloader = DataLoader(
@@ -210,7 +217,8 @@ def create_train_dataloader(
         pin_memory=True,
     )
 
-    print("Band indices for training dataloader:", band_indices)
+    if verbose:
+        print("Band indices for training dataloader:", band_indices)
 
     return train_dataloader
 
@@ -223,6 +231,7 @@ def create_test_dataloader(
     num_workers: int = NUM_WORKERS,
     data_samples: Optional[list] = None,
     labels: Optional[list] = None,
+    verbose: bool = False,
 ):
     """
     Create test dataloader with either CSV file or pre-loaded data.
@@ -235,13 +244,15 @@ def create_test_dataloader(
         num_workers: Number of worker processes
         data_samples: Pre-loaded hypercube data (optional)
         labels: Pre-loaded labels (optional)
+        verbose: If True, prints additional information during dataloader creation.
     """
     test_data = HypercubeDataset(
         csv_file=test_csv,
         band_indices=band_indices,
         transform=transform,
         data_samples=data_samples,
-        labels=labels
+        labels=labels,
+        verbose=verbose
     )
 
     test_dataloader = DataLoader(
@@ -252,6 +263,7 @@ def create_test_dataloader(
         pin_memory=True,
     )
 
-    print("Band indices for test dataloader:", band_indices)
+    if verbose:
+        print("Band indices for test dataloader:", band_indices)
 
     return test_dataloader
