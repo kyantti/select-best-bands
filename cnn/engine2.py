@@ -3,8 +3,7 @@ Contains functions for training and testing a PyTorch model with comprehensive e
 """
 
 import torch
-import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 from torch.amp import GradScaler  # type: ignore
 from torcheval.metrics.functional import (
     multiclass_f1_score,
@@ -19,42 +18,32 @@ import warnings
 def calculate_metrics(
     y_true: torch.Tensor, y_pred: torch.Tensor, num_classes: int
 ) -> Dict[str, float]:
-    """Calculate comprehensive classification metrics.
-
+    """
+    Calculate comprehensive classification metrics.
     Args:
         y_true: Ground truth labels
         y_pred: Predicted labels
         num_classes: Number of classes in the dataset
-
     Returns:
-        Dictionary containing accuracy, precision, recall, and f1 scores
+        Dictionary with accuracy, precision, recall, and f1 scores.
     """
-    # Calculate accuracy
-    accuracy = (y_pred == y_true).sum().item() / len(y_pred)
-
-    # Calculate macro-averaged metrics using torcheval
+    accuracy = (y_pred == y_true).float().mean().item()
     with warnings.catch_warnings():
-        warnings.simplefilter(
-            "ignore"
-        )  # Suppress warnings for classes not present in batch
-
+        warnings.simplefilter("ignore")
         precision = multiclass_precision(
-            y_pred, y_true, num_classes=num_classes, average="macro"
+            y_true, y_pred, num_classes=num_classes, average="macro"
         )
         recall = multiclass_recall(
-            y_pred, y_true, num_classes=num_classes, average="macro"
+            y_true, y_pred, num_classes=num_classes, average="macro"
         )
         f1 = multiclass_f1_score(
-            y_pred, y_true, num_classes=num_classes, average="macro"
+            y_true, y_pred, num_classes=num_classes, average="macro"
         )
-
     return {
         "accuracy": accuracy,
-        "precision": precision.item()
-        if isinstance(precision, torch.Tensor)
-        else precision,
-        "recall": recall.item() if isinstance(recall, torch.Tensor) else recall,
-        "f1": f1.item() if isinstance(f1, torch.Tensor) else f1,
+        "precision": precision.item(),
+        "recall": recall.item(),
+        "f1": f1.item(),
     }
 
 
@@ -217,9 +206,6 @@ def print_classification_report(
         y_pred: Predicted labels
         class_names: Optional list of class names for better readability
     """
-    print("\n" + "=" * 50)
-    print("DETAILED CLASSIFICATION REPORT")
-    print("=" * 50)
 
     # Convert to numpy for sklearn
     y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) else y_true
@@ -244,10 +230,7 @@ def print_confusion_matrix(
         num_classes: Number of classes
         class_names: Optional list of class names for better readability
     """
-    print("\n" + "=" * 30)
-    print("CONFUSION MATRIX")
-    print("=" * 30)
-
+    
     # Calculate confusion matrix using torcheval
     cm = multiclass_confusion_matrix(y_pred, y_true, num_classes=num_classes)
 
