@@ -268,14 +268,6 @@ gen,nevals,avg,std,min,max,best
 50,18,0.83203125,0.015625,0.80078125,0.83984375,"[126, 78, 186]"
 ```
 
-#### Spectral Band Analysis
-The optimal band combination [126, 78, 186] corresponds to:
-- **Band 126:** ~590 nm (Yellow-Green region)
-- **Band 78:** ~520 nm (Green region)  
-- **Band 186:** ~680 nm (Red region)
-
-*Note: Exact wavelengths depend on sensor specifications*
-
 ### Visualization
 ![CNN Training Results](out/figures/exp_001_cnn_results_126_78_186.png)
 *Loss and accuracy curves for the best band combination [126, 78, 186] over 50 training epochs*
