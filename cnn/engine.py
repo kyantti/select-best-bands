@@ -6,7 +6,6 @@ import torch
 
 from typing import Dict, List, Tuple, Optional
 from torch.amp import GradScaler  # type: ignore
-from torcheval.metrics.functional import multiclass_f1_score
 
 def train_step(
     model: torch.nn.Module,

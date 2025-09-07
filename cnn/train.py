@@ -3,12 +3,14 @@ Trains a PyTorch image classification model using device-agnostic code.
 """
 
 import torch
-import engine2
+import engine
 import data_setup
 import torchvision
 import gc
 from torchinfo import summary
 from timeit import default_timer as timer
+import matplotlib.pyplot as plt
+from util.helper_functions import plot_loss_curves
 
 
 # Setup hyperparameters
@@ -120,7 +122,7 @@ summary(
 start_time = timer()
 
 # Setup training and save the results
-results = engine2.train(
+results = engine.train(
     model=model,
     train_dataloader=train_dataloader,
     test_dataloader=test_dataloader,
@@ -129,12 +131,18 @@ results = engine2.train(
     epochs=NUM_EPOCHS,
     device=device,
     verbose=True,
-    num_classes=4,
 )
 
 # End the timer and print out how long it took
 end_time = timer()
 print(f"[INFO] Total training time: {end_time - start_time:.3f} seconds")
+
+# Plot the training results
+print("[INFO] Plotting training results...")
+plot_loss_curves(results)
+plt.savefig("out/figures/training_results.png", dpi=300, bbox_inches='tight')
+plt.show()
+print("[INFO] Training results plot saved as 'out/figures/training_results.png'")
 
 # After training finishes
 del model

@@ -36,22 +36,48 @@ def check_dataset(csv_path, band_indices, output_dir, num_images=8):
 
     print(f"✅ Dataset loaded successfully. Total samples: {len(dataset)}")
 
-    # Get a few random samples to display
-    if len(dataset) < num_images:
-        print(
-            f"⚠️ Warning: Dataset has fewer than {num_images} samples. Displaying all {len(dataset)} samples."
-        )
-        num_images = len(dataset)
-
-    indices = torch.randperm(len(dataset))[:num_images]
-
-    # Adjust subplot grid if there are fewer than 8 images
+    # Group samples by class
+    class_indices = {}
+    for idx in range(len(dataset)):
+        _, label = dataset[idx]
+        if label not in class_indices:
+            class_indices[label] = []
+        class_indices[label].append(idx)
+    
+    num_classes = len(class_indices)
+    print(f"📊 Found {num_classes} classes: {list(class_indices.keys())}")
+    
+    # Calculate samples per class
+    samples_per_class = num_images // num_classes
+    if samples_per_class == 0:
+        samples_per_class = 1
+        num_images = num_classes
+        print(f"⚠️ Warning: Reduced num_images to {num_images} to show at least 1 sample per class.")
+    
+    print(f"📋 Showing {samples_per_class} samples per class ({samples_per_class * num_classes} total)")
+    
+    # Select balanced samples from each class
+    selected_indices = []
+    for label in sorted(class_indices.keys()):
+        available_indices = class_indices[label]
+        if len(available_indices) < samples_per_class:
+            print(f"⚠️ Warning: Class {label} has only {len(available_indices)} samples, using all of them.")
+            selected_indices.extend(available_indices)
+        else:
+            # Randomly select samples_per_class indices from this class
+            perm = torch.randperm(len(available_indices))[:samples_per_class]
+            selected_indices.extend([available_indices[i] for i in perm])
+    
+    # Update num_images to match actual selected samples
+    num_images = len(selected_indices)
+    
+    # Adjust subplot grid
     ncols = 4
     nrows = (num_images + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(15, 4 * nrows))
     axes = axes.flatten()  # Flatten to handle any grid size easily
 
-    for i, idx in enumerate(indices):
+    for i, idx in enumerate(selected_indices):
         image_tensor, label = dataset[idx]
 
         # Convert tensor to a viewable numpy image
@@ -67,10 +93,11 @@ def check_dataset(csv_path, band_indices, output_dir, num_images=8):
         ax.axis("off")
 
     # Hide any unused subplots
-    for j in range(i + 1, len(axes)):
+    last_used_idx = len(selected_indices) - 1 if selected_indices else -1
+    for j in range(last_used_idx + 1, len(axes)):
         axes[j].axis("off")
 
-    plt.suptitle(f"Sanity Check: Samples from {csv_path}")
+    plt.suptitle(f"Sanity Check: Balanced samples from {csv_path}")
     plt.tight_layout(rect=(0, 0.03, 1, 0.95))  # Adjust layout to make room for suptitle
 
     # --- Save the figure to a file ---
@@ -95,7 +122,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="sanity_check_output",
+        default="sanity-check",
         help="Directory to save the output images.",
     )
     args = parser.parse_args()
