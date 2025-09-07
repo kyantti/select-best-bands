@@ -245,7 +245,7 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, START_BAND, END_BAND):
     return (individual,)
 
 
-def run_single_experiment(seed, experiment_num):
+def main(seed):
     print(f"🎯 Optimizing RGB band selection from {END_BAND + 1} total bands")
 
     torch.manual_seed(42)
@@ -351,85 +351,73 @@ def run_single_experiment(seed, experiment_num):
     stats.register("max", numpy.max)
     stats.register("best", lambda pop: halloffame[0])
 
-    # Run the genetic algorithm
-    start_time = time.time()
-
-    pop, logbook = algorithms.eaSimple(
-        pop,
-        toolbox,
-        cxpb=CROSSOVER_PROB,
-        mutpb=MUTATION_PROB,
-        ngen=GENERATIONS,
-        stats=stats,
-        halloffame=halloffame,
-        verbose=True,
-    )
-
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-
-    print(f"⏱️ Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)")
-
-    print(f"🏆 Best individual: {halloffame[0]} -> Fitness: {halloffame[0].fitness.values[0]}")
-
-    # The 'best' column is now automatically recorded by the logbook
-    df_stats = pd.DataFrame(logbook)
-    # The 'best' column contains Individual objects, convert them to simple lists
-    df_stats["best"] = df_stats["best"].apply(list)
-    csv_path = f"out/tables/exp_{experiment_num:02d}_ga_stats.csv"
-    df_stats.to_csv(csv_path, index=False)
-
-    print(f"📊 GA statistics saved to '{csv_path}'")
-
-    # Save plotting data and final results for the best individual
-    best_bands = list(halloffame[0])
-
-    if tuple(best_bands) in history:
-
-        best_results = history[tuple(best_bands)]
-
-        # Create a dictionary with the final metrics from the last epoch
-        final_metrics = {
-            "train_loss": best_results["train_loss"][-1],
-            "train_acc": best_results["train_acc"][-1],
-            "test_loss": best_results["test_loss"][-1],
-            "test_acc": best_results["test_acc"][-1],
-        }
-
-        # Convert the dictionary to a pandas DataFrame
-        df_final_results = pd.DataFrame([final_metrics])
-
-        # Define the CSV filename
-        csv_filename = f"out/tables/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
-
-        # Save the DataFrame to a CSV file
-        df_final_results.to_csv(csv_filename, index=False)
-
-        print(f"📈 CNN training results for best individual saved to '{csv_filename}'")
-
-        cnn.util.helper_functions.plot_loss_curves(best_results)
-        plot_filename = f"out/figures/exp_{experiment_num:03d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
-        plt.savefig(
-            plot_filename,
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.show()
-
-        print(f"📈 Loss curves plots for the best individual saved to '{plot_filename}'")
-
-
-def main(seed):
     for i in range(NUM_EXPERIMENTS):
         experiment_num = EXPERIMENT_START + i
 
-        print(f"🧬 EXPERIMENT {experiment_num:02d}")
+        start_time = time.time()
 
-        # Use different seeds for each experiment to ensure different results
-        current_seed = seed + i  # Base seed + experiment offset
-        run_single_experiment(current_seed, experiment_num)
+        pop, logbook = algorithms.eaSimple(
+            pop,
+            toolbox,
+            cxpb=CROSSOVER_PROB,
+            mutpb=MUTATION_PROB,
+            ngen=GENERATIONS,
+            stats=stats,
+            halloffame=halloffame,
+            verbose=True,
+        )
 
-        print(f"✅ Experiment {experiment_num:02d} completed!")
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+
+        print(f"⏱️ Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)")
+
+        print(f"🏆 Best individual: {halloffame[0]} -> Fitness: {halloffame[0].fitness.values[0]}")
+
+        # The 'best' column is now automatically recorded by the logbook
+        df_stats = pd.DataFrame(logbook)
+        # The 'best' column contains Individual objects, convert them to simple lists
+        df_stats["best"] = df_stats["best"].apply(list)
+        csv_path = f"out/tables/exp_{experiment_num:02d}_ga_stats.csv"
+        df_stats.to_csv(csv_path, index=False)
+
+        print(f"📊 GA statistics saved to '{csv_path}'")
+
+        # Save plotting data and final results for the best individual
+        best_bands = list(halloffame[0])
+
+        if tuple(best_bands) in history:
+            best_results = history[tuple(best_bands)]
+
+            # Create a dictionary with the final metrics from the last epoch
+            final_metrics = {
+                "train_loss": best_results["train_loss"][-1],
+                "train_acc": best_results["train_acc"][-1],
+                "test_loss": best_results["test_loss"][-1],
+                "test_acc": best_results["test_acc"][-1],
+            }
+
+            # Convert the dictionary to a pandas DataFrame
+            df_final_results = pd.DataFrame([final_metrics])
+
+            # Define the CSV filename
+            csv_filename = f"out/tables/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
+
+            # Save the DataFrame to a CSV file
+            df_final_results.to_csv(csv_filename, index=False)
+
+            print(f"📈 CNN training results for best individual saved to '{csv_filename}'")
+
+            cnn.util.helper_functions.plot_loss_curves(best_results)
+            plot_filename = f"out/figures/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
+            plt.savefig(
+                plot_filename,
+                dpi=300,
+                bbox_inches="tight",
+            )
+            plt.show()
+
+            print(f"📈 Loss curves plots for the best individual saved to '{plot_filename}'")
 
 
 if __name__ == "__main__":
