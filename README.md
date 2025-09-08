@@ -94,33 +94,6 @@ Core packages automatically installed:
 - **Data Science:** numpy, pandas, matplotlib, scikit-learn
 - **Utilities:** tqdm, pillow, requests
 
-## 🚀 Quick Start
-
-### 1. Prepare Your Data
-
-Ensure your hyperspectral data follows this structure:
-- CSV files (`train_dataset.csv`, `test_dataset.csv`) with file paths and numeric class labels (0, 1, 2, 3)
-- `.npy` files containing hyperspectral cubes with shape `(height, width, 448)`
-- Classes: 0 (C0 - healthy), 1 (C1 - low toxin), 2 (C2 - medium toxin), 3 (C3 - high toxin)
-
-### 2. Run Data Validation
-
-```bash
-uv run check_data.py
-```
-
-### 3. Start Genetic Algorithm Optimization
-
-```bash
-# Interactive mode (runs 5 experiments by default)
-uv run ga.py
-
-# Background execution with logging
-nohup uv run python -u ga.py > out/logs/experiment_name.log 2>&1 &
-```
-
-**Note:** The GA automatically handles CNN training for each individual - there's no need to run CNN training separately.
-
 ## 🏃 Usage
 
 ### Genetic Algorithm for Band Selection
