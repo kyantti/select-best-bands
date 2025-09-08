@@ -94,23 +94,27 @@ Core packages automatically installed:
 - **Data Science:** numpy, pandas, matplotlib, scikit-learn
 - **Utilities:** tqdm, pillow, requests
 
-## 🏃 Usage
+## 🗂️ Data Format
 
-### Genetic Algorithm for Band Selection
+### CSV Structure
+- **Files:** `train_dataset.csv` (898 samples), `test_dataset.csv`
+- **Columns:** `filepath` (path to .npy file), `label` (numeric: 0, 1, 2, 3)
+- **Example:**
+  ```csv
+  filepath,label
+  data/processed/train/C0/sample_001.npy,0
+  data/processed/train/C1/sample_002.npy,1
+  ```
 
-Run the main optimization process (default: 5 experiments):
-
-```bash
-uv run ga.py
-```
-
-### Background Execution
-
-For long-running experiments with logging:
-
-```bash
-nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
-```
+### Hyperspectral Data
+- **Format:** NumPy arrays (`.npy` files)
+- **Shape:** `(height, width, 448)` - 448 spectral bands
+- **Data Type:** Float32, normalized pixel intensities
+- **Classes (numeric labels in CSV):** 
+  - **0 (C0):** Healthy figs (no toxin contamination)
+  - **1 (C1):** Low toxin contamination
+  - **2 (C2):** Medium toxin contamination  
+  - **3 (C3):** High toxin contamination
 
 ## ⚡ Configuration
 
@@ -134,27 +138,23 @@ START_BAND = 0             # First band index
 END_BAND = 447             # Last band index (448 total bands)
 ```
 
-## 🗂️ Data Format
+## 🏃 Usage
 
-### CSV Structure
-- **Files:** `train_dataset.csv` (898 samples), `test_dataset.csv`
-- **Columns:** `filepath` (path to .npy file), `label` (numeric: 0, 1, 2, 3)
-- **Example:**
-  ```csv
-  filepath,label
-  data/processed/train/C0/sample_001.npy,0
-  data/processed/train/C1/sample_002.npy,1
-  ```
+### Genetic Algorithm for Band Selection
 
-### Hyperspectral Data
-- **Format:** NumPy arrays (`.npy` files)
-- **Shape:** `(height, width, 448)` - 448 spectral bands
-- **Data Type:** Float32, normalized pixel intensities
-- **Classes (numeric labels in CSV):** 
-  - **0 (C0):** Healthy figs (no toxin contamination)
-  - **1 (C1):** Low toxin contamination
-  - **2 (C2):** Medium toxin contamination  
-  - **3 (C3):** High toxin contamination
+Run the main optimization process (default: 5 experiments):
+
+```bash
+uv run ga.py
+```
+
+### Background Execution
+
+For long-running experiments with logging:
+
+```bash
+nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
+```
 
 ## 📊 Experimental Results
 
