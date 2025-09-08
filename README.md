@@ -1,6 +1,6 @@
 # 🧬 Hyperspectral Band Selection with Genetic Algorithm
 
-This project implements a genetic algorithm-based approach to optimize RGB band selection from hyperspectral imaging data for toxin classification in figs. The system combines evolutionary optimization (DEAP) with deep learning (PyTorch ResNet50 transfer learning) to identify the most informative spectral bands for distinguishing between different toxin contamination levels.
+This project implements a genetic algorithm-based approach to optimize RGB band selection from hyperspectral imaging data for toxin classification in figs. The system combines evolutionary optimization with deep learning to identify the most informative spectral bands for distinguishing between different toxin contamination levels.
 
 ## 🔬 Research Context
 
