@@ -180,10 +180,10 @@ nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
 ### Detailed Results Tables
 
 #### Final CNN Performance (Best Individual)
-```csv
-train_loss,train_acc,test_loss,test_acc
-0.1626397494612069,0.947198275862069,0.5444981418331736,0.83984375
-```
+|train_loss|train_acc|test_loss   |test_acc            |
+|----------|---------|------------|--------------------|
+|0.1626397494612069|0.947198275862069|0.5444981418331736|0.83984375          |
+
 
 #### GA Evolution Statistics (Complete)
 |gen|nevals|avg         |std                 |min       |max       |best           |
