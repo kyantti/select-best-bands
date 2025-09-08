@@ -8,6 +8,15 @@ Hyperspectral imaging captures data across hundreds of spectral bands, but many 
 
 ![Data Sanity Check](sanity-check/data_sanity_check.png)
 
+## ✨ Features
+
+- **Genetic Algorithm Optimization:** Uses DEAP framework to evolve optimal RGB band combinations from 448 hyperspectral bands
+- **Transfer Learning:** ResNet50 pre-trained model fine-tuned for toxin classification
+- **Basic Evaluation Metrics:** Tracks training/test loss and accuracy across epochs
+- **Memory Optimization:** Efficient data loading strategy for large hyperspectral datasets
+- **Experiment Management:** Support for multiple experimental runs with detailed logging
+- **Modular Architecture:** Clean separation between GA optimization and CNN training components
+
 ## 📁 Project Structure
 
 ```
@@ -39,20 +48,11 @@ select-best-bands/
 └── README.md                  # Project documentation
 ```
 
-## ✨ Features
-
-- **Genetic Algorithm Optimization:** Uses DEAP framework to evolve optimal RGB band combinations from 448 hyperspectral bands
-- **Transfer Learning:** ResNet50 pre-trained model fine-tuned for toxin classification
-- **Basic Evaluation Metrics:** Tracks training/test loss and accuracy across epochs
-- **Memory Optimization:** Efficient data loading strategy for large hyperspectral datasets
-- **Experiment Management:** Support for multiple experimental runs with detailed logging
-- **Modular Architecture:** Clean separation between GA optimization and CNN training components
-
 ## 🔧 Prerequisites
 
 - Python 3.13+
-- CUDA-capable GPU (recommended for faster training)
-- At least 8GB RAM for data processing
+- CUDA-capable GPU
+- At least 16GB RAM
 - [uv](https://github.com/astral-sh/uv) package manager (recommended)
 
 ## ⚙️ Installation
