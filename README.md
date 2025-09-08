@@ -245,12 +245,6 @@ nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
 ![CNN Training Results](out/figures/exp_001_cnn_results_126_78_186.png)
 *Loss and accuracy curves for the best band combination [126, 78, 186] over 50 training epochs*
 
-### Performance Summary
-- **Peak Test Accuracy:** 83.98% achieved by optimal band combination
-- **Training Speed:** ~1.5 minutes per individual evaluation (NVIDIA GPU)
-- **Total Experiment Time:** ~6-7 hours for complete GA run (50 generations, 20 individuals)
-- **Evolution Efficiency:** Steady improvement from 79.3% → 83.98% over 50 generations
-
 ## 🧩 Algorithm Workflow
 
 ### 1. Initialization
@@ -259,7 +253,7 @@ nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
 
 ### 2. Fitness Evaluation
 - Convert hyperspectral data to RGB using selected bands
-- Train ResNet50 with transfer learning on converted images
+- Train ResNet50 with fine tuning on converted images
 - Use test accuracy as fitness score
 
 ### 3. Evolution Process
