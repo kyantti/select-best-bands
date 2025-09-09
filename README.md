@@ -158,25 +158,6 @@ nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
 
 ## 📊 Experimental Results
 
-### Latest Results (Experiment 01)
-- **Best Band Combination:** [126, 78, 186] (R, G, B indices from 448 bands)
-- **Final Test Accuracy:** 83.98% (0.8398)
-- **Final Training Accuracy:** 94.72% (0.9472)
-- **Final Training Loss:** 0.163
-- **Final Test Loss:** 0.544
-
-### Evolution Progress
-- **Initial Generation (Gen 0):** Best fitness 79.3% with bands [225, 101, 369]
-- **Mid Evolution (Gen 25):** Best fitness 81.6% with bands [139, 71, 197]  
-- **Final Generation (Gen 50):** Best fitness 83.98% with bands [126, 78, 186]
-- **Population Convergence:** Final generation showed 100% convergence to optimal solution
-
-### Output Files Generated
-- **GA Statistics:** `out/tables/exp_01_ga_stats.csv` - Evolution metrics per generation
-- **Best CNN Results:** `out/tables/exp_01_cnn_results_126_78_186.csv` - Final training metrics
-- **Visualization:** `out/figures/exp_001_cnn_results_126_78_186.png` - Loss/accuracy curves
-- **Full Log:** `out/logs/experiment_1.log` - Complete execution details
-
 ### Detailed Results Tables
 
 #### Final CNN Performance (Best Individual)
