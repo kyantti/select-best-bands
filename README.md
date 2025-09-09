@@ -138,6 +138,28 @@ START_BAND = 0             # First band index
 END_BAND = 447             # Last band index (448 total bands)
 ```
 
+## 🧩 Algorithm Workflow
+
+### 1. Initialization
+- Generate random population of band combinations (triplets for RGB)
+- Each individual represents 3 band indices from 448 available bands
+
+### 2. Fitness Evaluation
+- Convert hyperspectral data to RGB using selected bands
+- Train ResNet50 with fine tuning on converted images
+- Use test accuracy as fitness score
+
+### 3. Evolution Process
+- **Selection:** Tournament selection of parent individuals
+- **Crossover:** Blend crossover to create offspring with clamped values
+- **Mutation:** Random band replacement with low probability
+- **Elitism:** Preserve best individuals across generations
+
+### 4. Convergence
+- Continue evolution for specified generations
+- Track and save best-performing band combinations
+- Output optimal RGB mapping and basic accuracy metrics
+
 ## 🏃 Usage
 
 ### Genetic Algorithm for Band Selection
@@ -226,31 +248,10 @@ nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
 ![CNN Training Results](out/figures/exp_001_cnn_results_126_78_186.png)
 *Loss and accuracy curves for the best band combination [126, 78, 186] over 50 training epochs*
 
-## 🧩 Algorithm Workflow
-
-### 1. Initialization
-- Generate random population of band combinations (triplets for RGB)
-- Each individual represents 3 band indices from 448 available bands
-
-### 2. Fitness Evaluation
-- Convert hyperspectral data to RGB using selected bands
-- Train ResNet50 with fine tuning on converted images
-- Use test accuracy as fitness score
-
-### 3. Evolution Process
-- **Selection:** Tournament selection of parent individuals
-- **Crossover:** Blend crossover to create offspring with clamped values
-- **Mutation:** Random band replacement with low probability
-- **Elitism:** Preserve best individuals across generations
-
-### 4. Convergence
-- Continue evolution for specified generations
-- Track and save best-performing band combinations
-- Output optimal RGB mapping and basic accuracy metrics
 
 ## 📋 License
 
-This project is part of ongoing research. Please contact the authors for usage permissions and cite appropriately in academic work.
+This project is part of ongoing research. Please contact me for usage permissions and cite appropriately in academic work.
 
 ## 📬 Contact
 
