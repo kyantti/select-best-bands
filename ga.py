@@ -25,8 +25,8 @@ import cnn.engine
 import cnn.util.helper_functions
 
 # Experiment configuration
-NUM_EXPERIMENTS = 5 
-EXPERIMENT_START = 1 
+NUM_EXPERIMENTS = 1 
+EXPERIMENT_START = 7 
 
 # CNN Hyperparameters
 IMAGE_HEIGHT = 64
@@ -34,16 +34,20 @@ IMAGE_WIDTH = 128
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 50
+PATIENCE = 10
+MIN_DELTA = 0.001
+RESTORE_BEST_WEIGHTS = True
+
 
 # Hyperspectral data band range
 START_BAND = 0
 END_BAND = 447
 
 # GA Hyperparameters
-POPULATION_SIZE = 20
-GENERATIONS = 50
+POPULATION_SIZE = 50
+GENERATIONS = 100
 CROSSOVER_PROB = 0.8
-MUTATION_PROB = 0.15
+MUTATION_PROB = 0.1
 ELITISM_SIZE = 1
 
 # Setup directories containing the CSV files pointing to the hyperspectral data
@@ -132,6 +136,13 @@ def evaluate(
         loss_fn = torch.nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+        # Create early stopping instance
+        early_stopping = cnn.engine.EarlyStopping(
+            patience=PATIENCE,  # Wait 10 epochs for improvement
+            min_delta=MIN_DELTA,  # Minimum change of 0.001 to qualify as improvement
+            restore_best_weights=RESTORE_BEST_WEIGHTS,  # Restore best weights when stopping
+        )
+
         start_time = timer()
 
         print(f"🔍 Starting evaluation of individual [{r_band}, {g_band}, {b_band}]")
@@ -146,6 +157,7 @@ def evaluate(
             epochs=NUM_EPOCHS,
             verbose=True,
             device=device,
+            early_stopping=early_stopping,
         )
 
         end_time = timer()
@@ -248,9 +260,6 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, START_BAND, END_BAND):
 def main(seed):
     print(f"🎯 Optimizing RGB band selection from {END_BAND + 1} total bands")
 
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-
     print("📊 Pre-loading hypercubes...")
 
     train_data_samples, train_labels = cnn.data_setup.load_hypercubes_from_csv(
@@ -287,8 +296,6 @@ def main(seed):
             ),
         ]
     )
-
-    random.seed(seed)
 
     creator.create("FitnessMax", base.Fitness, weights=(1.0,))
     creator.create("Individual", array.array, typecode="h", fitness=creator.FitnessMax)  # type: ignore
@@ -352,6 +359,11 @@ def main(seed):
     stats.register("best", lambda pop: halloffame[0])
 
     for i in range(NUM_EXPERIMENTS):
+        experiment_seed = seed + i  # Different seed for each experiment
+        random.seed(experiment_seed)
+        torch.manual_seed(experiment_seed)
+        torch.cuda.manual_seed(experiment_seed)
+
         experiment_num = EXPERIMENT_START + i
 
         start_time = time.time()
