@@ -267,6 +267,7 @@ gen,nevals,avg,std,min,max,best
 49,16,0.8310546875,0.015716286073663165,0.80078125,0.83984375,"[126, 78, 186]"
 50,18,0.83203125,0.015625,0.80078125,0.83984375,"[126, 78, 186]"
 ```
+![Fitness Evolution](best_fitness_evolution.png)
 
 ### Visualization
 ![CNN Training Results](out/figures/exp_001_cnn_results_126_78_186.png)

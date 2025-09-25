@@ -1,0 +1,71 @@
+Traceback (most recent call last):
+  File "/home/pablosetra/Documents/tfg/select-best-bands/ga.py", line 18, in <module>
+    import torchvision
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torchvision/__init__.py", line 10, in <module>
+    from torchvision import _meta_registrations, datasets, io, models, ops, transforms, utils  # usort:skip
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torchvision/models/__init__.py", line 2, in <module>
+    from .convnext import *
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torchvision/models/convnext.py", line 8, in <module>
+    from ..ops.misc import Conv2dNormActivation, Permute
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torchvision/ops/__init__.py", line 23, in <module>
+    from .poolers import MultiScaleRoIAlign
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torchvision/ops/poolers.py", line 10, in <module>
+    from .roi_align import roi_align
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torchvision/ops/roi_align.py", line 7, in <module>
+    from torch._dynamo.utils import is_compile_supported
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/__init__.py", line 53, in <module>
+    from .polyfills import loader as _  # usort: skip # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/polyfills/loader.py", line 25, in <module>
+    POLYFILLED_MODULES: tuple["ModuleType", ...] = tuple(
+                                                   ~~~~~^
+        importlib.import_module(f".{submodule}", package=polyfills.__name__)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        for submodule in POLYFILLED_MODULE_NAMES
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/polyfills/loader.py", line 26, in <genexpr>
+    importlib.import_module(f".{submodule}", package=polyfills.__name__)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pablosetra/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/polyfills/builtins.py", line 30, in <module>
+    @substitute_in_graph(builtins.all, can_constant_fold_through=True)
+     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/decorators.py", line 427, in wrapper
+    rule_map: dict[Any, type[VariableTracker]] = get_torch_obj_rule_map()
+                                                 ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/trace_rules.py", line 2870, in get_torch_obj_rule_map
+    obj = load_object(k)
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/trace_rules.py", line 2901, in load_object
+    val = _load_obj_from_str(x[0])
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_dynamo/trace_rules.py", line 2885, in _load_obj_from_str
+    return getattr(importlib.import_module(module), obj_name)
+                   ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "/home/pablosetra/.local/share/uv/python/cpython-3.13.5-linux-x86_64-gnu/lib/python3.13/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_higher_order_ops/map.py", line 6, in <module>
+    from torch._functorch.aot_autograd import AOTConfig, create_joint
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_functorch/aot_autograd.py", line 135, in <module>
+    from .partitioners import default_partition
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_functorch/partitioners.py", line 37, in <module>
+    from ._activation_checkpointing.graph_info_provider import GraphInfoProvider
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/torch/_functorch/_activation_checkpointing/graph_info_provider.py", line 3, in <module>
+    import networkx as nx
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/networkx/__init__.py", line 26, in <module>
+    from networkx import classes
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/networkx/classes/__init__.py", line 1, in <module>
+    from .graph import Graph
+  File "/home/pablosetra/Documents/tfg/select-best-bands/.venv/lib/python3.13/site-packages/networkx/classes/graph.py", line 15, in <module>
+    from networkx import convert
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 1022, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1155, in get_code
+  File "<frozen importlib._bootstrap_external>", line 784, in _compile_bytecode
+KeyboardInterrupt

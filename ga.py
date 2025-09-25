@@ -19,14 +19,11 @@ import torchvision
 import matplotlib.pyplot as plt
 from timeit import default_timer as timer
 import pandas as pd
+import seaborn as sns
 
 import cnn.data_setup
-import cnn.engine
+import cnn.engine2
 import cnn.util.helper_functions
-
-# Experiment configuration
-NUM_EXPERIMENTS = 1 
-EXPERIMENT_START = 7 
 
 # CNN Hyperparameters
 IMAGE_HEIGHT = 64
@@ -38,17 +35,16 @@ PATIENCE = 10
 MIN_DELTA = 0.001
 RESTORE_BEST_WEIGHTS = True
 
-
 # Hyperspectral data band range
 START_BAND = 0
 END_BAND = 447
 
 # GA Hyperparameters
-POPULATION_SIZE = 50
-GENERATIONS = 100
+POPULATION_SIZE = 25
+GENERATIONS = 50
 CROSSOVER_PROB = 0.8
-MUTATION_PROB = 0.1
-ELITISM_SIZE = 1
+MUTATION_PROB = 0.05
+ELITISM_SIZE = 2
 
 # Setup directories containing the CSV files pointing to the hyperspectral data
 train_csv = "train_dataset.csv"
@@ -56,7 +52,6 @@ test_csv = "test_dataset.csv"
 
 # Cache for previously evaluated individuals to avoid redundant computations
 history = {}
-
 
 def evaluate(
     individual,
@@ -67,6 +62,7 @@ def evaluate(
     train_labels,
     test_data_samples,
     test_labels,
+    class_names,
 ):
     """
     Generate RGB images from the individual and evaluate the model with the generated images
@@ -130,14 +126,14 @@ def evaluate(
 
         in_features = model.fc.in_features
         model.fc = torch.nn.Linear(
-            in_features=in_features, out_features=4, bias=True
+            in_features=in_features, out_features=len(class_names), bias=True
         ).to(device)
 
         loss_fn = torch.nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
         # Create early stopping instance
-        early_stopping = cnn.engine.EarlyStopping(
+        early_stopping = cnn.engine2.EarlyStopping(
             patience=PATIENCE,  # Wait 10 epochs for improvement
             min_delta=MIN_DELTA,  # Minimum change of 0.001 to qualify as improvement
             restore_best_weights=RESTORE_BEST_WEIGHTS,  # Restore best weights when stopping
@@ -148,7 +144,7 @@ def evaluate(
         print(f"🔍 Starting evaluation of individual [{r_band}, {g_band}, {b_band}]")
 
         # Setup training and save the results
-        results = cnn.engine.train(
+        results = cnn.engine2.train(
             model=model,
             train_dataloader=train_dataloader,
             test_dataloader=test_dataloader,
@@ -157,7 +153,7 @@ def evaluate(
             epochs=NUM_EPOCHS,
             verbose=True,
             device=device,
-            early_stopping=early_stopping,
+            class_names=class_names,
         )
 
         end_time = timer()
@@ -257,7 +253,7 @@ def mut_gaussian_clamped(individual, mu, sigma, indpb, START_BAND, END_BAND):
     return (individual,)
 
 
-def main(seed):
+def main(seed, experiment_num):
     print(f"🎯 Optimizing RGB band selection from {END_BAND + 1} total bands")
 
     print("📊 Pre-loading hypercubes...")
@@ -267,6 +263,9 @@ def main(seed):
     )
 
     test_data_samples, test_labels = cnn.data_setup.load_hypercubes_from_csv(test_csv)
+
+    # Get class names from the training labels
+    class_names = sorted(list(set(train_labels)))
 
     print("✅ All hypercubes loaded into memory!")
 
@@ -326,6 +325,7 @@ def main(seed):
             train_labels=train_labels,
             test_data_samples=test_data_samples,
             test_labels=test_labels,
+            class_names=class_names,
         ),
     )
     toolbox.register(
@@ -358,79 +358,115 @@ def main(seed):
     stats.register("max", numpy.max)
     stats.register("best", lambda pop: halloffame[0])
 
-    for i in range(NUM_EXPERIMENTS):
-        experiment_seed = seed + i  # Different seed for each experiment
-        random.seed(experiment_seed)
-        torch.manual_seed(experiment_seed)
-        torch.cuda.manual_seed(experiment_seed)
+    
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
 
-        experiment_num = EXPERIMENT_START + i
+    start_time = time.time()
 
-        start_time = time.time()
+    pop, logbook = algorithms.eaSimple(
+        pop,
+        toolbox,
+        cxpb=CROSSOVER_PROB,
+        mutpb=MUTATION_PROB,
+        ngen=GENERATIONS,
+        stats=stats,
+        halloffame=halloffame,
+        verbose=True,
+    )
 
-        pop, logbook = algorithms.eaSimple(
-            pop,
-            toolbox,
-            cxpb=CROSSOVER_PROB,
-            mutpb=MUTATION_PROB,
-            ngen=GENERATIONS,
-            stats=stats,
-            halloffame=halloffame,
-            verbose=True,
-        )
+    end_time = time.time()
+    elapsed_time = end_time - start_time
 
-        end_time = time.time()
-        elapsed_time = end_time - start_time
+    print(f"⏱️ Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)")
 
-        print(f"⏱️ Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)")
+    print(f"🏆 Best individual: {halloffame[0]} -> Fitness: {halloffame[0].fitness.values[0]}")
 
-        print(f"🏆 Best individual: {halloffame[0]} -> Fitness: {halloffame[0].fitness.values[0]}")
+    # The 'best' column is now automatically recorded by the logbook
+    df_stats = pd.DataFrame(logbook)
+    # The 'best' column contains Individual objects, convert them to simple lists
+    df_stats["best"] = df_stats["best"].apply(list)
+    csv_path = f"out/tables/exp_{experiment_num:02d}_ga_stats.csv"
+    df_stats.to_csv(csv_path, index=False)
 
-        # The 'best' column is now automatically recorded by the logbook
-        df_stats = pd.DataFrame(logbook)
-        # The 'best' column contains Individual objects, convert them to simple lists
-        df_stats["best"] = df_stats["best"].apply(list)
-        csv_path = f"out/tables/exp_{experiment_num:02d}_ga_stats.csv"
-        df_stats.to_csv(csv_path, index=False)
+    print(f"📊 GA statistics saved to '{csv_path}'")
 
-        print(f"📊 GA statistics saved to '{csv_path}'")
+    # Save plotting data and final results for the best individual
+    best_bands = list(halloffame[0])
 
-        # Save plotting data and final results for the best individual
-        best_bands = list(halloffame[0])
+    if tuple(best_bands) in history:
+        best_results = history[tuple(best_bands)]
 
-        if tuple(best_bands) in history:
-            best_results = history[tuple(best_bands)]
+        # Create a dictionary with the final metrics from the last epoch
+        final_metrics = {
+            "train_loss": best_results["train_loss"][-1],
+            "train_acc": best_results["train_acc"][-1],
+            "test_loss": best_results["test_loss"][-1],
+            "test_acc": best_results["test_acc"][-1],
+        }
 
-            # Create a dictionary with the final metrics from the last epoch
-            final_metrics = {
-                "train_loss": best_results["train_loss"][-1],
-                "train_acc": best_results["train_acc"][-1],
-                "test_loss": best_results["test_loss"][-1],
-                "test_acc": best_results["test_acc"][-1],
-            }
+        # Convert the dictionary to a pandas DataFrame
+        df_final_results = pd.DataFrame([final_metrics])
 
-            # Convert the dictionary to a pandas DataFrame
-            df_final_results = pd.DataFrame([final_metrics])
+        # Define the CSV filename
+        csv_filename = f"out/tables/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
 
-            # Define the CSV filename
-            csv_filename = f"out/tables/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
+        # Save the DataFrame to a CSV file
+        df_final_results.to_csv(csv_filename, index=False)
 
-            # Save the DataFrame to a CSV file
-            df_final_results.to_csv(csv_filename, index=False)
+        print(f"📈 CNN training results for best individual saved to '{csv_filename}'")
+            
+        # --- New code to save confusion matrix and classification report ---
 
-            print(f"📈 CNN training results for best individual saved to '{csv_filename}'")
+        # Save Classification Report
+        if "classification_report" in best_results:
+            report = best_results["classification_report"][0]
+            df_report = pd.DataFrame(report).transpose()
+            report_filename = f"out/tables/exp_{experiment_num:02d}_classification_report_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
+            df_report.to_csv(report_filename, index=True)
+            print(f"📝 Classification report saved to '{report_filename}'")
 
-            cnn.util.helper_functions.plot_loss_curves(best_results)
-            plot_filename = f"out/figures/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
-            plt.savefig(
-                plot_filename,
-                dpi=300,
-                bbox_inches="tight",
-            )
+        # Save and Plot Confusion Matrix
+        if "confusion_matrix" in best_results:
+            cm = best_results["confusion_matrix"][0]
+            df_cm = pd.DataFrame(cm, index=class_names, columns=class_names)
+                
+            # Save to CSV
+            cm_filename_csv = f"out/tables/exp_{experiment_num:02d}_confusion_matrix_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
+            df_cm.to_csv(cm_filename_csv, index=True)
+            print(f"📋 Confusion matrix saved to '{cm_filename_csv}'")
+                
+            # Plot and save as PNG
+            plt.figure(figsize=(10, 7))
+            sns.heatmap(df_cm, annot=True, fmt="d", cmap="Blues")
+            plt.title("Confusion Matrix")
+            plt.ylabel("Actual")
+            plt.xlabel("Predicted")
+            cm_filename_png = f"out/figures/exp_{experiment_num:02d}_confusion_matrix_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
+            plt.savefig(cm_filename_png, dpi=300, bbox_inches="tight")
             plt.show()
+            print(f"🖼️ Confusion matrix plot saved to '{cm_filename_png}'")
 
-            print(f"📈 Loss curves plots for the best individual saved to '{plot_filename}'")
+
+        # --- End of new code ---
+
+        cnn.util.helper_functions.plot_loss_curves(best_results)
+        plot_filename = f"out/figures/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
+        plt.savefig(
+            plot_filename,
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.show()
+
+        print(f"📈 Loss curves plots for the best individual saved to '{plot_filename}'")
 
 
 if __name__ == "__main__":
-    main(64)
+    # experiment number should be passed as an argument
+    if len(sys.argv) != 2:
+        print("Usage: python ga.py <experiment_number>")
+        sys.exit(1)
+    experiment_num = int(sys.argv[1])
+    main(seed = 64, experiment_num = experiment_num)
