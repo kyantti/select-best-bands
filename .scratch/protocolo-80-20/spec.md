@@ -72,6 +72,23 @@ La versión nueva debe reproducir bit a bit el candidato ganador, el modelo fina
 42. Como agente, quiero que `./init.sh` siga siendo la puerta de verificación tras el cambio (importa los módulos nuevos, comprueba el manifiesto de recortes y la partición, corre los tests), para que el flujo de trabajo de `CLAUDE.md` no se rompa.
 43. Como agente, quiero que los CSV de referencia de `tests/data/` estén versionados, para que el test de reproducción de la partición funcione en un clon limpio.
 
+### Fase 2: las mejoras del experimento siguiente
+
+Estas historias solo se implementan cuando la fase 1 haya pasado su prueba de sistema. Por defecto todas están apagadas y el proyecto sigue reproduciendo la corrida del 10 de septiembre.
+
+44. Como estudiante, quiero que todas las mejoras vivan detrás de constantes de `config.py` cuyo valor por defecto reproduzca la corrida del 10 de septiembre, para que la verificación bit a bit siga siendo posible después de añadirlas.
+45. Como estudiante, quiero que el reparto pueda equilibrar la validación por número de recortes y no solo por capturas, porque la estratificación por captura dejó la validación con 52 y 60 recortes de C0 y C2 frente a 24 de C1 y 24 de C3, y el fitness es weighted F1, que pesa por soporte.
+46. Como estudiante, quiero que el equilibrado elija el subconjunto de capturas de validación de forma determinista — el que minimiza el ratio máx/mín de recortes por clase, desempatando por identidades ordenadas —, para que la partición no dependa de nada más que de la semilla.
+47. Como estudiante, quiero que el equilibrado conserve la agrupación por captura y la exigencia de al menos una captura por clase a cada lado, y que falle antes que relajarlas, para no cambiar una debilidad por una fuga.
+48. Como estudiante, quiero que el ratio alcanzado quede escrito en el resumen del reparto, para poder decir en el informe cuánto mejoró respecto del 2,5 del 10 de septiembre.
+49. Como estudiante, quiero poder inicializar la ResNet con un backbone preentrenado por SimCLR sobre vistas de tripletas de bandas, en vez de solo con ImageNet, porque es la única intervención del registro que superó su criterio propuesto (+0,023 pooled, 8 de 8 candidatos).
+50. Como estudiante, quiero que el preentrenamiento vea solo capturas de train — un checkpoint con las 22 de ajuste para la búsqueda y otro con las 28 para el modelo final —, para que ningún píxel de test entre por la vía no supervisada.
+51. Como estudiante, quiero que sin checkpoint el evaluador reproduzca el resultado ya publicado con delta exactamente `0.00e+00`, para probar que el punto de inyección es inerte cuando no se usa.
+52. Como estudiante, quiero una prueba pareada corta antes de gastar las 22 horas — 8 candidatos, 5 semillas por brazo, puntuada en validación — y descartar la inicialización si el delta pooled no llega a +0,010 con al menos 6 de 8 candidatos positivos.
+53. Como estudiante, quiero poder entrenar el modelo final con una lista de semillas en vez de una, publicando las predicciones de cada semilla y un resumen con media y dispersión, para separar el ruido del entrenamiento del ruido del reparto.
+54. Como estudiante, quiero que la salida diga cuántas veces se leyó el test (una por semilla), para que el artefacto nunca afirme una sola lectura cuando hubo diez.
+55. Como estudiante, quiero un script corto que mire las dos capturas flojas del test — una entera de C0 y otra entera de C1, ambas en 0,689 frente a 0,857–0,951 de las otras seis — y dónde caen las 17 confusiones C0↔C3, para descartar un problema de datos antes de tocar el modelo.
+
 ## Implementation Decisions
 
 **Punto de partida.** Rama `feature/protocolo-80-20` creada de nuevo desde `feature/experiments` en `b7f1fc9` (el harness de agentes ya está ahí). Existió una rama con ese nombre anoche; otra sesión commiteó en ella los borrados de ficheros obsoletos (`f1e4759`, `3a19e48`), la abandonó y la borró. Esos dos commits cuelgan en el reflog y no hacen falta: los borrados se repiten en la rama nueva.
@@ -102,6 +119,24 @@ La versión nueva debe reproducir bit a bit el candidato ganador, el modelo fina
 
 **Relación con `repo-health`.** Esta feature reescribe `ga.py`, así que deja sin objeto `repo-health/02` (importar `engine2`), `03` (overrides por entorno: aquí son flags) y `04` (tests sobre los operadores antiguos). `05` (scripts de análisis para los 20 experimentos) sigue siendo válido e independiente. `06` (README) queda absorbido por la reescritura del README. La decisión de cerrarlos como `wontfix` o `done` es de Pablo al triar.
 
+### Fase 2: las mejoras, apagadas por defecto
+
+**La regla que las gobierna.** La fase 1 se acepta reproduciendo bit a bit la corrida del 10 de septiembre; si una mejora cambia ese número, la verificación desaparece. Por eso cada una entra detrás de una constante de `config.py` cuyo valor por defecto es el comportamiento de hoy — `VALIDATION_BALANCE = "acquisition_stratified"`, `BACKBONE_CHECKPOINT = None`, `FINAL_SEEDS = [2718]` — y la prueba de sistema se corre con los valores por defecto antes y después de añadirlas. El equivalente en `fig-aflatoxin` es `docs/14-next-run-plan.md`, que sigue el mismo orden y los mismos criterios.
+
+**Por qué van juntas.** Cambiar el reparto o el evaluador cambia el fitness de todos los candidatos, así que la búsqueda se repite entera (21,8 h en la corrida real). No hay forma barata de añadir una después, y por eso las tres entran en la misma corrida, con una puerta pagada antes de la parte cara.
+
+**Validación equilibrada por recortes.** `assign_partitions` gana un parámetro de política. Con `crop_count_balanced`, la frontera train/validación deja de ser un `train_test_split` y pasa a ser una elección determinista: enumerar los subconjuntos admisibles de capturas de train del tamaño pedido (al menos una captura por clase a cada lado), puntuar cada uno por el ratio máx/mín de recortes por clase, quedarse con el mínimo y desempatar por las identidades ordenadas. La frontera train/test no se toca: sigue siendo la del 10 de septiembre. Criterio congelado: ratio ≤ 1,5; si ningún subconjunto lo alcanza, se publica el mejor y se registra el número, sin relajar ni la agrupación ni la estratificación. Coste: cero GPU.
+
+**Inicialización contrastiva.** Un script `pretrain.py` de nivel raíz con un bucle SimCLR sobre vistas de tripletas de bandas — dos vistas de un recorte son dos tripletas al azar del mismo recorte —, que guarda un `state_dict` en `out/models/` junto con la lista de capturas que vio. `cnn/model.py` acepta un checkpoint opcional antes del ajuste fino de siempre; sin checkpoint, el camino de código es el de hoy. Dos checkpoints, nunca uno: el de la búsqueda se preentrena con las 22 capturas de ajuste y el del modelo final con las 28 de train, y ninguno ve una captura de test. El contrato de fitness de la caché incluye la identidad del checkpoint, para que los candidatos de los dos brazos no se mezclen. Coste: unos tres minutos por checkpoint.
+
+**La puerta pagada.** Antes de la corrida larga, un brazo de control (ImageNet) y uno de tratamiento (checkpoint) sobre un panel fijo de 8 candidatos del estudio del 10 de septiembre — el ganador más 7 repartidos por el rango de fitness observado —, 5 semillas cada uno, puntuados en la validación equilibrada. Sigue si el delta pooled llega a +0,010 y es positivo en al menos 6 de 8; si no, la inicialización se descarta y queda escrito que la ganancia del experimento 13 no sobrevive al cambio de protocolo. Sin lecturas intermedias y sin repetir la puerta con otro panel. Coste: unos 80 entrenamientos, ~4,5 h de GPU; el control hay que pagarlo porque los CSV del experimento 9 eran del protocolo anidado.
+
+**Modelo final con varias semillas.** `train_final` acepta una lista; con un solo elemento su salida es idéntica a la de hoy. Publica predicciones por semilla y un resumen con media y dispersión, y escribe el número de lecturas del test. Aquí hay una decisión de protocolo que no es técnica: diez semillas leen el test diez veces, y eso solo es honesto si nada se selecciona sobre él, es decir, si las semillas se fijan en `config.py` antes de lanzar, el titular es la media de las diez con su dispersión y ninguna se descarta después. La alternativa es correr las diez sobre validación y no tocar el test. **Pablo decide cuál, y se lo dice a la profesora antes de lanzar, no después de ver el número.**
+
+**Las dos capturas flojas.** Un script que cruza las predicciones por recorte con el manifiesto de partición y responde dónde se concentran los errores extremos y si esas dos capturas se distinguen de las otras seis en exposición, iluminación o calidad de la segmentación. Cero GPU y va primero: si hay algo roto en esas capturas o en sus etiquetas, todo lo demás está afinando un modelo contra un problema de datos.
+
+**Orden y coste.** Las dos capturas flojas (0 h) → la validación equilibrada con sus tests (0 h) → el punto de inyección con su delta cero (0 h) → la puerta pareada (~4,5 h) → la decisión sobre las semillas → la corrida completa (~22 h) → las semillas del modelo final (~0,6 h). Unas 27 horas de GPU en total.
+
 ## Testing Decisions
 
 Un buen test aquí comprueba el comportamiento observable del protocolo (qué recortes ve cada paso, qué valores salen, qué se rechaza) y no cómo está escrito. Nada de tests sobre nombres internos ni sobre el formato exacto de los mensajes de log.
@@ -115,12 +150,21 @@ Como unidades puras: normalización (solo primer plano de train, fondo a cero, v
 
 **Prueba de sistema, en GPU, contra la corrida real:** la partición generada coincide con la de referencia; el candidato 366/262/225 da la semilla 3104252108, la normalización y el weighted F1 0,8700979843225085 registrados; el modelo final da 0,722142952443074 y la misma matriz de confusión y predicciones; el bootstrap da [0,645, 0,848]; y la búsqueda en modo "solo caché", precargada con los 383 candidatos reales, termina con el mismo ganador y la misma historia por generación. Tolerancia: exacta con las mismas versiones, la misma GPU (A100), 8 workers persistentes y el orden del manifiesto; cualquier desviación de esas condiciones explica diferencias de ±0,01–0,02 sin que sea un fallo del porte.
 
+**Fase 2.** Cada mejora añade la prueba que la hace falsable, y ninguna sustituye a la prueba de sistema de la fase 1, que se vuelve a correr con los valores por defecto:
+
+- **Partición equilibrada como función pura:** sobre el manifiesto real, la política `crop_count_balanced` alcanza un ratio ≤ 1,5 y conserva la frontera train/test; la política por defecto sigue reproduciendo la partición de referencia del 10 de septiembre; datos sintéticos donde ningún subconjunto admisible llega al objetivo comprueban que se publica el mejor y no se relaja la estratificación.
+- **Punto de inyección inerte:** sin checkpoint, la evaluación de 366/262/225 devuelve el weighted F1 registrado con delta exactamente `0.00e+00`. Este test es el que autoriza a tocar `cnn/model.py`.
+- **Cohorte del preentrenamiento:** el checkpoint guarda las capturas que vio y un test comprueba que ninguna está en test, y que el de la búsqueda no contiene ninguna de validación.
+- **Semillas múltiples:** con `FINAL_SEEDS = [2718]` la salida de `train_final` es idéntica a la de la fase 1, y el número de lecturas del test declarado coincide con el número de semillas.
+
 ## Out of Scope
 
 - Portar el catálogo de ENVI, la segmentación con Grounded-SAM-2 y el recorte con corrección radiométrica. Los recortes ya existen y se enlazan.
 - MLflow, huellas SHA-256 de artefactos, publicación inmutable, configuración pydantic/YAML, DAG de etapas, contenedores, mise, lefthook.
 - El vigilante de búsqueda por artefactos; basta `tail -f` del log y el CSV de candidatos.
-- Los scripts de los experimentos 4 a 13 de fig-aflatoxin y la inicialización contrastiva.
+- Los scripts de los experimentos 4 a 13 de fig-aflatoxin. La inicialización contrastiva del experimento 13 sí entra, reescrita en la forma de este repositorio (fase 2); sus scripts originales y sus checkpoints no se portan, y los checkpoints además se borraron el 14 de septiembre.
+- Repetir el protocolo entero con otras semillas de reparto para medir cuánto del 0,722 depende de qué 8 capturas cayeron en test. Son 22 h por repetición y es, en sustancia, la validación cruzada que la profesora pidió quitar: propuesta aparte, Pablo decide.
+- Todo lo que el registro ya cerró con evidencia y no se vuelve a probar: más de tres bandas (experimento 4), pérdida ordinal tipo CORAL (5), mejorar la búsqueda (7, 9 y 12) y mover las bandas acompañantes al visible (11).
 - Los documentos y ADRs de fig-aflatoxin; quedan allí como registro.
 - Borrar nada de `fig-aflatoxin`, ni `data/interim` y `data/processed` de este repo (Pablo decide).
 - Lanzar la corrida real de 22 h: la lanza Pablo con el comando que se le dé.
@@ -131,4 +175,6 @@ Como unidades puras: normalización (solo primer plano de train, fondo a cero, v
 - Mantener la derivación exacta de la semilla por candidato (unas 40 líneas) es lo que permite verificar el porte del GA entero sin gastar 22 horas de GPU y reutilizar los 383 candidatos ya evaluados en una búsqueda nueva con la misma semilla de estudio.
 - El resultado de validación (0,870) y el de test (0,722) no son comparables; la caída es la anchura esperada con 6 capturas de validación y 8 de test, no un sesgo. Citar siempre el test con su intervalo.
 - Los 20 experimentos originales no son comparables con los nuevos: medían accuracy, repartían por higo y dejaban que el test eligiera las bandas.
+- Ninguna mejora de la fase 2 estrecha el intervalo de ±0,10: lo fija tener 8 capturas de test, y solo lo mueven más capturas.
+- La fase 1 y la fase 2 no se mezclan en la misma corrida sin que la prueba de sistema haya pasado antes con los valores por defecto. Si las mejoras entran primero, el porte deja de ser verificable y no hay forma de saber si una diferencia viene del porte o de la mejora.
 - Estado al publicar (15 Sep, 12:40): en el árbol de trabajo ya están el symlink `data/cropped_hypercubes`, `data/cropped_hypercubes.csv`, `data/spectral_axes.csv`, `tests/data/*.csv` (ignorados por el `.gitignore` actual) y `out/models/`. Nada más está hecho.

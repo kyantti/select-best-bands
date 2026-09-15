@@ -17,6 +17,7 @@ Refer to a ticket as `<feature-slug>/<NN>` (e.g. `repo-health/02`). Never renumb
 Current feature directories:
 
 - `repo-health/`: make the repo runnable and restartable for agents (tickets 01–06).
+- `protocolo-80-20/`: port the reliable fig-aflatoxin protocol into the flat TFG layout (phase 1, tickets 01–10) and the next run's improvements behind defaults that keep reproducing it (phase 2, tickets 11–17; `spec.md` is the parent).
 
 ## When a skill says "publish to the issue tracker"
 

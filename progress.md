@@ -4,7 +4,7 @@
 
 **Last Updated:** 2026-09-15 (tarde)
 **Branch:** feature/experiments at b7f1fc9
-**Active Feature:** `protocolo-80-20` – spec publicado, sin tickets todavía. Next step: `/to-tickets` sobre `.scratch/protocolo-80-20/spec.md`, luego implementar.
+**Active Feature:** `protocolo-80-20` – 17 tickets publicados (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). Ninguno `in-progress`. Next pick: protocolo-80-20/01 – Branch, pinned environment and `config.py` (`ready-for-agent`, sin bloqueos).
 
 **No empieces por repo-health/02.** La feature `protocolo-80-20` reescribe `ga.py` entero, así que 02 (restaurar el import de `engine2`), 03 (overrides por entorno) y 04 (tests de los operadores viejos) quedan sin objeto. Están pendientes de triaje por el autor. `repo-health/05` sigue siendo válido e independiente; `06` lo absorbe el README nuevo.
 
@@ -21,13 +21,14 @@
 
 ### What's In Progress
 
-- [ ] `protocolo-80-20`: sin tickets. Siguiente acción: `/to-tickets` sobre el spec.
+- [ ] `protocolo-80-20` fase 1: tickets 01–10 en `ready-for-agent`. Cadena: 01 → 02 → 03 → 04 → 05 → 06 (replay de la corrida del 10 Sep como exp_21) → 07 → 08 → 09; 10 (`check_data.py`) solo depende de 03.
+- [ ] `protocolo-80-20` fase 2: tickets 11–17 en `ready-for-agent`, todos detrás de la fase 1. 11 (capturas flojas del test, 0 h) depende de 08 y va primero; 12 (validación equilibrada por recortes), 13 (punto de inyección de checkpoint, delta 0.00e+00) y 16 (`FINAL_SEEDS`) dependen de 09; 14 (`pretrain.py` SimCLR) de 13; 15 (puerta pareada, ~4,5 h) de 12 y 14; 17 (re-verificar los valores por defecto y entregar el comando de la corrida) de 12, 13, 14 y 16. Cada constante de fase 2 tiene por defecto el comportamiento del 10 Sep.
 
 ### What's Next
 
-1. `/to-tickets` sobre `.scratch/protocolo-80-20/spec.md`.
-2. Triar `repo-health/02,03,04` (probablemente `wontfix`: la feature nueva los deja sin objeto).
-3. Implementar `protocolo-80-20` empezando por la rama y el entorno (paso 1 del plan).
+1. protocolo-80-20/01 (rama, pines, `.gitignore`, `config.py`, borrados, `init.sh` provisional).
+2. Triar `repo-health/02,03,04,06` (probablemente `wontfix`: la feature nueva los deja sin objeto; 06 lo absorbe protocolo-80-20/09).
+3. Seguir la cadena 02 → 09; el replay (06) usa el número 21, la primera corrida real es la 22.
 
 ## Blockers / Risks
 
