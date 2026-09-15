@@ -1,472 +1,189 @@
-"""
-Genetic Algorithm for Optimal Band Selection in Hyperspectral Imaging
+"""Genetic search for the best band triplet, and the evaluation of a single one.
 
-This script uses DEAP to evolve optimal RGB band combinations from hyperspectral data
-for toxin classification using ResNet50 transfer learning.
+    uv run python ga.py --evaluate 366 262 225    # train and score one triplet
+    uv run python ga.py N                         # the search of experiment N
+
+The search itself arrives with ticket `protocolo-80-20/05`; what is here is the
+path every candidate goes through, exposed on its own so it can be checked
+against a recorded run before a search is built on top of it.
 """
 
-import array
-import functools
-import random
-from collections.abc import Sequence
-from itertools import repeat
-import time
-import numpy
-from deap import algorithms, base, creator, tools
-import torch
+import argparse
+import csv
 import sys
-import torchvision
-import matplotlib.pyplot as plt
-from timeit import default_timer as timer
-import pandas as pd
-import seaborn as sns
+import time
+from pathlib import Path
 
-import cnn.data_setup
-import cnn.engine2
-import cnn.util.helper_functions
+import torch
 
-# CNN Hyperparameters
-IMAGE_HEIGHT = 64
-IMAGE_WIDTH = 128
-BATCH_SIZE = 32
-LEARNING_RATE = 0.001
-NUM_EPOCHS = 50
-PATIENCE = 10
-MIN_DELTA = 0.001
-RESTORE_BEST_WEIGHTS = True
+import config
+from cnn.data_setup import (
+    Hypercube,
+    load_hypercubes,
+    load_partitions,
+    load_spectral_axis,
+    spectral_axis_id,
+    wavelengths_of,
+)
+from cnn.model import candidate_seed, data_identity, evaluate_candidate
 
-# Hyperspectral data band range
-START_BAND = 0
-END_BAND = 447
 
-# GA Hyperparameters
-POPULATION_SIZE = 25
-GENERATIONS = 50
-CROSSOVER_PROB = 0.8
-MUTATION_PROB = 0.05
-ELITISM_SIZE = 2
+def select_device() -> torch.device:
+    """Resolve `config.DEVICE`, refusing to quietly fall back.
 
-# Setup directories containing the CSV files pointing to the hyperspectral data
-train_csv = "train_dataset.csv"
-test_csv = "test_dataset.csv"
+    `config.DEVICE` is part of what makes a number reproducible, so an
+    accelerator that was asked for and is not there is an error: falling back to
+    the CPU would keep running and produce a figure nobody could reproduce.
 
-# Cache for previously evaluated individuals to avoid redundant computations
-history = {}
-
-def evaluate(
-    individual,
-    device,
-    train_transform,
-    test_transform,
-    train_data_samples,
-    train_labels,
-    test_data_samples,
-    test_labels,
-    class_names,
-):
+    Raises:
+        ValueError: If the configured device is not available.
     """
-    Generate RGB images from the individual and evaluate the model with the generated images
-    :param individual: Individual to evaluate (3 band indices: [R, G, B])
-    :param train_data_samples: Pre-loaded training hypercube data
-    :param train_labels: Pre-loaded training labels
-    :param test_data_samples: Pre-loaded test hypercube data
-    :param test_labels: Pre-loaded test labels
-    :return: Fitness of the individual (test accuracy)
+    if config.DEVICE == "cpu":
+        return torch.device("cpu")
+    if config.DEVICE.startswith("cuda") and torch.cuda.is_available():
+        return torch.device(config.DEVICE)
+    raise ValueError(f"config.DEVICE is '{config.DEVICE}', which this machine does not have")
+
+
+def load_selection_data(*, verbose: bool = True):
+    """Load the crops band selection is allowed to see, and their identity.
+
+    Held-out test rows are dropped before a single NPZ is opened, so the search
+    cannot read what it will finally be scored on.  Returns the train-fit and
+    validation crops, the spectral axis, and the checksums of all three.
+
+    Raises:
+        ValueError: If the manifests leak across a boundary, if an artifact is
+            malformed, or if the crops were cut against another SpectralAxis.
     """
-    # Check if the individual is in the history
-    if tuple(individual) in history:
-        print(f"Bands {list(individual)} found in history. Returning cached fitness.")
-        cached_results = history[tuple(individual)]
-        fitness = (
-            cached_results["test_acc"][-1] if "test_acc" in cached_results else 0.0
-        )
-        return (fitness,)
-
-    # Debug output to track progress
-    r_band, g_band, b_band = int(individual[0]), int(individual[1]), int(individual[2])
-
-    try:
-        # Set band indices for this individual
-        band_indices = [r_band, g_band, b_band]
-
-        # Create DataLoaders with pre-loaded data
-        train_dataloader = cnn.data_setup.create_train_dataloader(
-            band_indices=band_indices,
-            transform=train_transform,
-            batch_size=BATCH_SIZE,
-            num_workers=0,  # Ensure no subprocesses in Pool worker, otherwise may hang
-            data_samples=train_data_samples,
-            labels=train_labels,
-            verbose=True,
-        )
-
-        test_dataloader = cnn.data_setup.create_test_dataloader(
-            band_indices=band_indices,
-            transform=test_transform,
-            batch_size=BATCH_SIZE,
-            num_workers=0,  # Ensure no subprocesses in Pool worker, otherwise may hang
-            data_samples=test_data_samples,
-            labels=test_labels,
-            verbose=True,
-        )
-
-        # Model setup (fresh for each individual)
-        weights = torchvision.models.ResNet50_Weights.DEFAULT
-        model = torchvision.models.resnet50(weights=weights).to(device)
-
-        # Freeze all parameters first
-        for param in model.parameters():
-            param.requires_grad = False
-
-        # Unfreeze last two layers
-        for param in model.layer4.parameters():
-            param.requires_grad = True
-        for param in model.fc.parameters():
-            param.requires_grad = True
-
-        in_features = model.fc.in_features
-        model.fc = torch.nn.Linear(
-            in_features=in_features, out_features=len(class_names), bias=True
-        ).to(device)
-
-        loss_fn = torch.nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
-        # Create early stopping instance
-        early_stopping = cnn.engine2.EarlyStopping(
-            patience=PATIENCE,  # Wait 10 epochs for improvement
-            min_delta=MIN_DELTA,  # Minimum change of 0.001 to qualify as improvement
-            restore_best_weights=RESTORE_BEST_WEIGHTS,  # Restore best weights when stopping
-        )
-
-        start_time = timer()
-
-        print(f"🔍 Starting evaluation of individual [{r_band}, {g_band}, {b_band}]")
-
-        # Setup training and save the results
-        results = cnn.engine2.train(
-            model=model,
-            train_dataloader=train_dataloader,
-            test_dataloader=test_dataloader,
-            optimizer=optimizer,
-            loss_fn=loss_fn,
-            epochs=NUM_EPOCHS,
-            verbose=True,
-            device=device,
-            class_names=class_names,
-        )
-
-        end_time = timer()
-
-        print(f"⏱️ Total training time: {end_time - start_time:.3f} seconds")
-
-        # Extract fitness (e.g., best test accuracy)
-        fitness = results["test_acc"][-1] if "test_acc" in results else 0.0
-
-        print(f"📊 Bands [{r_band}, {g_band}, {b_band}] -> Fitness: {fitness:.4f}")
-
-        # Store the result in the history
-        history[tuple(individual)] = results
-
-        # DEAP expects a tuple
-        return (fitness,)
-
-    except Exception as e:
-        print(f"❌ Error evaluating individual {list(individual)}: {e}")
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        sys.exit(1)
+    rows = load_partitions(config.PARTITIONS)
+    train_rows = [row for row in rows if row["partition"] == "train"]
+    fit_rows = [row for row in train_rows if row["selection_partition"] == "train"]
+    validation_rows = [row for row in train_rows if row["selection_partition"] == "validation"]
+    if verbose:
+        print(f"loading {len(fit_rows)} train-fit and {len(validation_rows)} validation crops")
+    training = load_hypercubes(config.HYPERCUBES_MANIFEST, fit_rows, verbose=verbose)
+    validation = load_hypercubes(config.HYPERCUBES_MANIFEST, validation_rows, verbose=verbose)
+    wavelengths = load_spectral_axis(config.SPECTRAL_AXES)
+    axis_ids = {hypercube.spectral_axis_id for hypercube in (*training, *validation)}
+    if axis_ids != {spectral_axis_id(wavelengths)}:
+        raise ValueError("train crops were cut against another SpectralAxis")
+    identity = data_identity(training, validation, train_rows, wavelengths)
+    return training, validation, wavelengths, identity
 
 
-def cx_blend_clamped(ind1, ind2, alpha, START_BAND, END_BAND):
-    """Executes a blend crossover that modify in-place the input individuals.
-    The blend crossover expects :term:`sequence` individuals of floating point
-    numbers.
+def write_predictions(path: Path, validation: list[Hypercube], predictions: list[int]) -> None:
+    """Write one row per validation crop, in the order the model saw them.
 
-    :param ind1: The first individual participating in the crossover.
-    :param ind2: The second individual participating in the crossover.
-    :param alpha: Extent of the interval in which the new values can be drawn
-                  for each attribute on both side of the parents' attributes.
-    :returns: A tuple of two individuals.
+    Opened exclusively, as fig-aflatoxin opens it: a file under `out/` is part
+    of the thesis record, so a second run of the same triplet has to be told to
+    write elsewhere rather than quietly replace the first one's numbers.
 
-    If an individual value is outside of the interval [0, 111], it is clipped to
-    the nearest value inside the interval
-
-    This function uses the :func:`~random.random` function from the python base
-    :mod:`random` module.
+    Raises:
+        FileExistsError: If `path` is already there.
     """
-    for i, (x1, x2) in enumerate(zip(list(ind1), list(ind2))):
-        gamma = (1.0 + 2.0 * alpha) * random.random() - alpha
-        ind1[i] = int((1.0 - gamma) * x1 + gamma * x2)
-        ind2[i] = int(gamma * x1 + (1.0 - gamma) * x2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", newline="") as target:
+        writer = csv.DictWriter(
+            target,
+            fieldnames=("cropped_hypercube_id", "acquisition_id", "actual", "predicted"),
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for hypercube, prediction in zip(validation, predictions, strict=True):
+            writer.writerow(
+                {
+                    "cropped_hypercube_id": hypercube.cropped_hypercube_id,
+                    "acquisition_id": hypercube.acquisition_id,
+                    "actual": config.CLASS_NAMES[hypercube.severity_class],
+                    "predicted": config.CLASS_NAMES[prediction],
+                }
+            )
 
-        # Clamp values to domain
-        ind1[i] = min(max(ind1[i], START_BAND), END_BAND)
-        ind2[i] = min(max(ind2[i], START_BAND), END_BAND)
 
-    return ind1, ind2
+def evaluate_command(bands, *, epochs: int, predictions_path: Path | None) -> None:
+    """Train one triplet on the train-fit crops and report its validation metrics.
 
-
-def mut_gaussian_clamped(individual, mu, sigma, indpb, START_BAND, END_BAND):
-    """This function applies a gaussian mutation of mean *mu* and standard
-    deviation *sigma* on the input individual. This mutation expects a
-    :term:`sequence` individual composed of real valued attributes.
-    The *indpb* argument is the probability of each attribute to be mutated.
-
-    :param individual: Individual to be mutated.
-    :param mu: Mean or :term:`python:sequence` of means for the
-               gaussian addition mutation.
-    :param sigma: Standard deviation or :term:`python:sequence` of
-                  standard deviations for the gaussian addition mutation.
-    :param indpb: Independent probability for each attribute to be mutated.
-    :returns: A tuple of one individual.
-
-    If an individual value is outside of the interval [0, 111], it is clipped to
-    the nearest value inside the interval
-
-    This function uses the :func:`~random.random` and :func:`~random.gauss`
-    functions from the python base :mod:`random` module.
+    Raises:
+        FileExistsError: If the predictions file is already there.  Checked
+            before anything is loaded, so an hour of training is never spent on
+            a result that cannot be written down.
     """
-    size = len(individual)
-    if not isinstance(mu, Sequence):
-        mu = repeat(mu, size)
-    elif len(mu) < size:
-        raise IndexError(
-            "mu must be at least the size of individual: %d < %d" % (len(mu), size)
+    if predictions_path is None:
+        r, g, b = (int(band) for band in bands)
+        predictions_path = config.TABLES_DIR / f"evaluate_{r}_{g}_{b}_validation_predictions.csv"
+    if predictions_path.exists():
+        raise FileExistsError(
+            f"{predictions_path} is already there; results under out/ are not overwritten. "
+            "Move it aside, or pass --predictions with another path."
         )
-    if not isinstance(sigma, Sequence):
-        sigma = repeat(sigma, size)
-    elif len(sigma) < size:
-        raise IndexError(
-            "sigma must be at least the size of individual: %d < %d"
-            % (len(sigma), size)
-        )
+    device = select_device()
+    training, validation, wavelengths, identity = load_selection_data()
+    nanometres = wavelengths_of(bands, wavelengths)
+    derived_seed = candidate_seed(bands, identity)
+    print(f"candidate      {tuple(bands)}")
+    print("wavelengths_nm " + ", ".join(f"{value}" for value in nanometres))
+    print(f"candidate seed {derived_seed}")
+    print(f"device         {device}  |  epochs {epochs}")
 
-    for i, m, s in zip(range(size), mu, sigma):
-        if random.random() < indpb:
-            individual[i] += int(random.gauss(m, s))
-            # Clamp the mutated value within the domain
-            individual[i] = min(max(individual[i], START_BAND), END_BAND)
-
-    return (individual,)
-
-
-def main(seed, experiment_num):
-    print(f"🎯 Optimizing RGB band selection from {END_BAND + 1} total bands")
-
-    print("📊 Pre-loading hypercubes...")
-
-    train_data_samples, train_labels = cnn.data_setup.load_hypercubes_from_csv(
-        train_csv
+    started = time.perf_counter()
+    predictions, metrics, (mean, std) = evaluate_candidate(
+        bands,
+        training,
+        validation,
+        seed=derived_seed,
+        device=device,
+        epochs=epochs,
     )
+    elapsed = time.perf_counter() - started
 
-    test_data_samples, test_labels = cnn.data_setup.load_hypercubes_from_csv(test_csv)
+    print(f"mean           {list(mean)}")
+    print(f"std            {list(std)}")
+    for name in ("weighted_f1", "macro_f1", "ordinal_mae", "quadratic_weighted_kappa"):
+        print(f"{name:<14} {metrics[name]!r}")
+    print(f"elapsed_s      {elapsed:.1f}")
 
-    # Get class names from the training labels
-    class_names = sorted(list(set(train_labels)))
+    write_predictions(predictions_path, validation, predictions)
+    print(f"predictions    {predictions_path}")
 
-    print("✅ All hypercubes loaded into memory!")
 
-    # Setup first device available with enough memory
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-
-    # Create transforms
-    train_transform = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-            torchvision.transforms.RandomHorizontalFlip(),
-            torchvision.transforms.RandomVerticalFlip(),
-            torchvision.transforms.RandomRotation(degrees=15),
-            torchvision.transforms.Normalize(
-                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-            ),
-        ]
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # The experiment number is accepted, and then refused below, so that the
+    # documented `ga.py N` says where the search went instead of dying on an
+    # unrecognized argument.
+    parser.add_argument(
+        "experiment", nargs="?", type=int, help="experiment number of a search run"
     )
-
-    test_transform = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-            torchvision.transforms.Normalize(
-                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-            ),
-        ]
+    parser.add_argument(
+        "--evaluate",
+        nargs=3,
+        type=int,
+        metavar=("R", "G", "B"),
+        help="train and score one band triplet instead of searching",
     )
-
-    creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-    creator.create("Individual", array.array, typecode="h", fitness=creator.FitnessMax)  # type: ignore
-
-    toolbox = base.Toolbox()
-
-    # Tell DEAP to use our pool for parallel evaluation
-    # pool = multiprocessing.Pool(processes=num_workers)
-    # toolbox.register("map", pool.map)
-    # num_workers = 1
-
-    # Attribute generator
-    toolbox.register("attr_int", random.randint, START_BAND, END_BAND)
-
-    # Structure initializers
-    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, 3)  # type: ignore
-    toolbox.register("population", tools.initRepeat, list, toolbox.individual)  # type: ignore
-
-    # Pass pre-loaded data along with other parameters to evaluate
-    toolbox.register(
-        "evaluate",
-        functools.partial(
-            evaluate,
-            device=device,
-            train_transform=train_transform,
-            test_transform=test_transform,
-            train_data_samples=train_data_samples,
-            train_labels=train_labels,
-            test_data_samples=test_data_samples,
-            test_labels=test_labels,
-            class_names=class_names,
-        ),
+    parser.add_argument(
+        "--epochs", type=int, default=config.NUM_EPOCHS, help="epochs to train for (smoke use)"
     )
-    toolbox.register(
-        "mate",
-        lambda ind1, ind2: cx_blend_clamped(
-            ind1, ind2, alpha=0.5, START_BAND=START_BAND, END_BAND=END_BAND
-        ),
+    parser.add_argument(
+        "--predictions",
+        type=Path,
+        help="where to write the validation predictions; the default is under out/tables/"
+        " and is never overwritten",
     )
-    toolbox.register(
-        "mutate",
-        lambda ind: mut_gaussian_clamped(
-            ind,
-            mu=0,
-            sigma=1.0,
-            indpb=0.1,
-            START_BAND=START_BAND,
-            END_BAND=END_BAND,
-        ),
+    arguments = parser.parse_args(argv)
+
+    if arguments.evaluate is None:
+        parser.error("the genetic search arrives with ticket 05; use --evaluate R G B for now")
+    if arguments.experiment is not None:
+        parser.error("--evaluate takes no experiment number: it writes no exp_NN_ output")
+    evaluate_command(
+        tuple(arguments.evaluate),
+        epochs=arguments.epochs,
+        predictions_path=arguments.predictions,
     )
-    toolbox.register("select", tools.selTournament, tournsize=3)
-
-    pop = toolbox.population(n=POPULATION_SIZE)  # type: ignore
-
-    halloffame = tools.HallOfFame(ELITISM_SIZE)
-
-    stats = tools.Statistics(lambda ind: ind.fitness.values)
-    stats.register("avg", numpy.mean)
-    stats.register("std", numpy.std)
-    stats.register("min", numpy.min)
-    stats.register("max", numpy.max)
-    stats.register("best", lambda pop: halloffame[0])
-
-    
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-
-    start_time = time.time()
-
-    pop, logbook = algorithms.eaSimple(
-        pop,
-        toolbox,
-        cxpb=CROSSOVER_PROB,
-        mutpb=MUTATION_PROB,
-        ngen=GENERATIONS,
-        stats=stats,
-        halloffame=halloffame,
-        verbose=True,
-    )
-
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-
-    print(f"⏱️ Total runtime: {elapsed_time / 60:.1f} minutes ({elapsed_time:.1f} seconds)")
-
-    print(f"🏆 Best individual: {halloffame[0]} -> Fitness: {halloffame[0].fitness.values[0]}")
-
-    # The 'best' column is now automatically recorded by the logbook
-    df_stats = pd.DataFrame(logbook)
-    # The 'best' column contains Individual objects, convert them to simple lists
-    df_stats["best"] = df_stats["best"].apply(list)
-    csv_path = f"out/tables/exp_{experiment_num:02d}_ga_stats.csv"
-    df_stats.to_csv(csv_path, index=False)
-
-    print(f"📊 GA statistics saved to '{csv_path}'")
-
-    # Save plotting data and final results for the best individual
-    best_bands = list(halloffame[0])
-
-    if tuple(best_bands) in history:
-        best_results = history[tuple(best_bands)]
-
-        # Create a dictionary with the final metrics from the last epoch
-        final_metrics = {
-            "train_loss": best_results["train_loss"][-1],
-            "train_acc": best_results["train_acc"][-1],
-            "test_loss": best_results["test_loss"][-1],
-            "test_acc": best_results["test_acc"][-1],
-        }
-
-        # Convert the dictionary to a pandas DataFrame
-        df_final_results = pd.DataFrame([final_metrics])
-
-        # Define the CSV filename
-        csv_filename = f"out/tables/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
-
-        # Save the DataFrame to a CSV file
-        df_final_results.to_csv(csv_filename, index=False)
-
-        print(f"📈 CNN training results for best individual saved to '{csv_filename}'")
-            
-        # --- New code to save confusion matrix and classification report ---
-
-        # Save Classification Report
-        if "classification_report" in best_results:
-            report = best_results["classification_report"][0]
-            df_report = pd.DataFrame(report).transpose()
-            report_filename = f"out/tables/exp_{experiment_num:02d}_classification_report_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
-            df_report.to_csv(report_filename, index=True)
-            print(f"📝 Classification report saved to '{report_filename}'")
-
-        # Save and Plot Confusion Matrix
-        if "confusion_matrix" in best_results:
-            cm = best_results["confusion_matrix"][0]
-            df_cm = pd.DataFrame(cm, index=class_names, columns=class_names)
-                
-            # Save to CSV
-            cm_filename_csv = f"out/tables/exp_{experiment_num:02d}_confusion_matrix_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.csv"
-            df_cm.to_csv(cm_filename_csv, index=True)
-            print(f"📋 Confusion matrix saved to '{cm_filename_csv}'")
-                
-            # Plot and save as PNG
-            plt.figure(figsize=(10, 7))
-            sns.heatmap(df_cm, annot=True, fmt="d", cmap="Blues")
-            plt.title("Confusion Matrix")
-            plt.ylabel("Actual")
-            plt.xlabel("Predicted")
-            cm_filename_png = f"out/figures/exp_{experiment_num:02d}_confusion_matrix_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
-            plt.savefig(cm_filename_png, dpi=300, bbox_inches="tight")
-            plt.show()
-            print(f"🖼️ Confusion matrix plot saved to '{cm_filename_png}'")
-
-
-        # --- End of new code ---
-
-        cnn.util.helper_functions.plot_loss_curves(best_results)
-        plot_filename = f"out/figures/exp_{experiment_num:02d}_cnn_results_{best_bands[0]}_{best_bands[1]}_{best_bands[2]}.png"
-        plt.savefig(
-            plot_filename,
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.show()
-
-        print(f"📈 Loss curves plots for the best individual saved to '{plot_filename}'")
+    return 0
 
 
 if __name__ == "__main__":
-    # experiment number should be passed as an argument
-    if len(sys.argv) != 2:
-        print("Usage: python ga.py <experiment_number>")
-        sys.exit(1)
-    experiment_num = int(sys.argv[1])
-    main(seed = 64, experiment_num = experiment_num)
+    sys.exit(main())

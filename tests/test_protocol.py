@@ -27,6 +27,7 @@ from cnn.data_setup import (
     spectral_axis_id,
     wavelengths_of,
 )
+from cnn.model import candidate_seed, classification_metrics, data_identity
 from split_dataset import assign_partitions
 
 BANDS = 5
@@ -554,3 +555,130 @@ def test_augmentation_is_off_when_the_dataset_is_not_training(tmp_path):
 
     assert torch.equal(image, expected)
     assert label == 0
+
+
+# --- Data identity, candidate seed and metrics ------------------------------
+# The seed of a candidate is derived from the candidate and from the data it
+# will train on, so a fitness does not depend on when, or by whom, the
+# candidate was found.  These tests watch that derivation, not its arithmetic.
+
+WAVELENGTHS = [400.0, 500.0, 600.0, 700.0, 800.0]
+
+
+def cohorts_of(tiny_dataset):
+    """The tiny dataset's train-fit crops, validation crops and train rows."""
+    manifest, rows = tiny_dataset
+    return (
+        load_hypercubes(manifest, rows["fit"], verbose=False),
+        load_hypercubes(manifest, rows["validation"], verbose=False),
+        rows["fit"] + rows["validation"],
+    )
+
+
+def identity_of(tiny_dataset, *, wavelengths=None):
+    """The data identity of the tiny dataset's train-fit and validation crops."""
+    training, validation, train_rows = cohorts_of(tiny_dataset)
+    return data_identity(
+        training,
+        validation,
+        train_rows,
+        WAVELENGTHS if wavelengths is None else wavelengths,
+    )
+
+
+def test_candidate_seed_is_the_same_every_time(tiny_dataset):
+    identity = identity_of(tiny_dataset)
+
+    first = candidate_seed((0, 1, 2), identity)
+    again = candidate_seed((0, 1, 2), identity)
+    from_a_fresh_identity = candidate_seed((0, 1, 2), identity_of(tiny_dataset))
+
+    assert first == again == from_a_fresh_identity
+    assert 0 <= first < 2**32
+
+
+def test_candidate_seed_differs_for_a_permutation_of_the_same_bands(tiny_dataset):
+    identity = identity_of(tiny_dataset)
+
+    seeds = {order: candidate_seed(order, identity) for order in ((0, 1, 2), (2, 1, 0), (1, 0, 2))}
+
+    assert len(set(seeds.values())) == 3
+
+
+def test_candidate_seed_differs_for_another_data_identity(tiny_dataset):
+    identity = identity_of(tiny_dataset)
+    # The same crops cut against another spectral axis are not the same data.
+    elsewhere = identity_of(tiny_dataset, wavelengths=[401.0, *WAVELENGTHS[1:]])
+
+    assert identity != elsewhere
+    assert candidate_seed((0, 1, 2), identity) != candidate_seed((0, 1, 2), elsewhere)
+
+
+def test_candidate_seed_follows_the_seed_it_is_given(tiny_dataset):
+    identity = identity_of(tiny_dataset)
+
+    assert candidate_seed((0, 1, 2), identity, seed=config.CANDIDATE_SEED) != candidate_seed(
+        (0, 1, 2), identity, seed=config.CANDIDATE_SEED + 1
+    )
+
+
+def test_data_identity_ignores_the_order_the_partition_rows_arrive_in(tiny_dataset):
+    training, validation, train_rows = cohorts_of(tiny_dataset)
+
+    forwards = data_identity(training, validation, train_rows, WAVELENGTHS)
+    backwards = data_identity(
+        training[::-1], validation, list(reversed(train_rows)), WAVELENGTHS
+    )
+
+    assert forwards == backwards
+
+
+def test_data_identity_separates_the_crops_it_fits_from_the_crops_it_scores(tiny_dataset):
+    fit, validation, train_rows = cohorts_of(tiny_dataset)
+
+    identity = data_identity(fit, validation, train_rows, WAVELENGTHS)
+    swapped = data_identity(fit[:1], [*fit[1:], *validation], train_rows, WAVELENGTHS)
+
+    assert identity["train_cropped_hypercubes"] != swapped["train_cropped_hypercubes"]
+    assert identity["validation_cropped_hypercubes"] != swapped["validation_cropped_hypercubes"]
+    # The partition rows and the axis did not move, so their checksums must not.
+    assert identity["train_evaluation_assignments"] == swapped["train_evaluation_assignments"]
+    assert identity["spectral_axis"] == swapped["spectral_axis"]
+
+
+def test_data_identity_sees_a_changed_reflectance_value(tiny_dataset):
+    training, validation, train_rows = cohorts_of(tiny_dataset)
+    identity = data_identity(training, validation, train_rows, WAVELENGTHS)
+
+    training[0].reflectance[0, 0, 0] = 0.123
+    tampered = data_identity(training, validation, train_rows, WAVELENGTHS)
+
+    assert identity["train_cropped_hypercubes"] != tampered["train_cropped_hypercubes"]
+
+
+def test_metrics_score_every_class_even_when_one_never_appears():
+    # C3 is in neither the truth nor the predictions; with explicit labels it
+    # still gets a row, an F1 of zero rather than a nan, and a 4x4 matrix.
+    metrics = classification_metrics([0, 0, 1, 2], [0, 1, 1, 2])
+
+    assert metrics["per_class_recall"] == {
+        "C0": 0.5,
+        "C1": 1.0,
+        "C2": 1.0,
+        "C3": 0.0,
+    }
+    assert np.asarray(metrics["confusion_matrix"]).shape == (4, 4)
+    assert metrics["ordinal_mae"] == 0.25
+    assert all(
+        np.isfinite(metrics[name])
+        for name in ("weighted_f1", "macro_f1", "ordinal_mae", "quadratic_weighted_kappa")
+    )
+
+
+def test_metrics_are_perfect_on_a_perfect_prediction():
+    metrics = classification_metrics([0, 1, 2, 3], [0, 1, 2, 3])
+
+    assert metrics["weighted_f1"] == 1.0
+    assert metrics["macro_f1"] == 1.0
+    assert metrics["ordinal_mae"] == 0.0
+    assert metrics["quadratic_weighted_kappa"] == 1.0
