@@ -1,0 +1,62 @@
+{
+  "features": [
+    {
+      "id": "feat-001",
+      "name": "Environment bootstrap",
+      "description": "`uv sync` populates .venv (it is currently empty) and `./init.sh` passes compile + manifest checks on this machine.",
+      "dependencies": [],
+      "status": "done",
+      "evidence": "2026-09-15: `./init.sh` ran `uv sync` (installed torch 2.7.1 + deps into .venv), compileall passed, then stopped at the ga.py import with ModuleNotFoundError: cnn.engine2 (that is feat-002). Run individually: cnn.engine/data_setup/helper_functions import OK; train 897 rows / test 226 rows, 0 missing files, labels {0,1,2,3}; torch.cuda.is_available()=True, 4 devices."
+    },
+    {
+      "id": "feat-002",
+      "name": "Restore ga.py imports after engine2 removal",
+      "description": "Commit 7357da7 deleted cnn/engine2.py as unused, but ga.py still does `import cnn.engine2` and reads `classification_report`/`confusion_matrix` from its results. Either restore engine2 from `git show 7357da7^:cnn/engine2.py` or port its per-sample prediction collection (test_step returning y_preds/y_true, sklearn report + confusion matrix in train) into cnn/engine.py and change the import. Done when `uv run python -c \"import ga\"` succeeds and `./init.sh` is green.",
+      "dependencies": [
+        "feat-001"
+      ],
+      "status": "ready-for-agent",
+      "evidence": ""
+    },
+    {
+      "id": "feat-003",
+      "name": "Smoke-run configuration",
+      "description": "Allow overriding GENERATIONS, POPULATION_SIZE and NUM_EPOCHS from the environment (e.g. GA_GENERATIONS=1 GA_POP=3 GA_EPOCHS=1) without changing the defaults, so an end-to-end run finishes in minutes. Done when `GA_GENERATIONS=1 GA_POP=3 GA_EPOCHS=1 uv run python ga.py 99` writes out/tables/exp_99_ga_stats.csv and exp_99_cnn_results_*.csv, and those files are then deleted.",
+      "dependencies": [
+        "feat-002"
+      ],
+      "status": "ready-for-agent",
+      "evidence": ""
+    },
+    {
+      "id": "feat-004",
+      "name": "Pytest smoke tests",
+      "description": "Add pytest as a dev dependency and tests that need no GPU and no data/: cx_blend_clamped and mut_gaussian_clamped keep bands in [START_BAND, END_BAND]; HypercubeDataset maps a tiny synthetic (h,w,448) .npy to a 3-channel image; train/test manifest rows parse and have labels in {0,1,2,3}. Wire `uv run pytest` into init.sh. Done when init.sh runs the suite green.",
+      "dependencies": [
+        "feat-001"
+      ],
+      "status": "ready-for-agent",
+      "evidence": ""
+    },
+    {
+      "id": "feat-005",
+      "name": "Analysis scripts cover all experiments",
+      "description": "create_summary_table.py hard-codes experiments 1..10 and plot_fitness_evolution.py hard-codes exp_10 while out/tables now holds experiments 1..20. Discover experiment numbers from the files in out/tables instead, and take the experiment for the fitness plot as a CLI argument. Done when `uv run python create_summary_table.py` lists 20 rows in out/tables/summary_results.csv.",
+      "dependencies": [
+        "feat-001"
+      ],
+      "status": "ready-for-agent",
+      "evidence": ""
+    },
+    {
+      "id": "feat-006",
+      "name": "README matches the code",
+      "description": "README shows POPULATION_SIZE=20, MUTATION_PROB=0.15, ELITISM_SIZE=1 but ga.py uses 25, 0.05, 2; it says `uv run ga.py` runs 5 experiments but ga.py requires an experiment number; it links sanity-check/data_sanity_check.png which was deleted in 7357da7. Fix those, and document run.sh and the experiment-number ownership of out/ files. Also: README says 898 training samples, the manifest has 897 rows.",
+      "dependencies": [
+        "feat-002"
+      ],
+      "status": "ready-for-agent",
+      "evidence": ""
+    }
+  ]
+}
