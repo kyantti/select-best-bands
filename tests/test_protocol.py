@@ -7,12 +7,14 @@ of it is written.
 
 import csv
 import json
+import random
 
 import numpy as np
 import pytest
 import torch
 
 import config
+import ga
 from cnn.data_setup import (
     CROPPED_HYPERCUBE_FIELDS,
     PARTITION_FIELDS,
@@ -682,3 +684,172 @@ def test_metrics_are_perfect_on_a_perfect_prediction():
     assert metrics["macro_f1"] == 1.0
     assert metrics["ordinal_mae"] == 0.0
     assert metrics["quadratic_weighted_kappa"] == 1.0
+
+
+# --- The genetic search, its cache and its resume ---------------------------
+# The search is exercised through an injected evaluator, so none of this needs
+# a GPU or a hypercube.  What it watches is the trajectory: which candidates are
+# proposed, in which order, and which of them cost a training run.
+
+GA_IDENTITY = {
+    "train_cropped_hypercubes": "a" * 64,
+    "validation_cropped_hypercubes": "b" * 64,
+    "train_evaluation_assignments": "c" * 64,
+    "spectral_axis": "d" * 64,
+}
+GA_BANDS = 40
+GA_WAVELENGTHS = [400.0 + index for index in range(GA_BANDS)]
+GA_PARAMS = ga.SearchParameters(population_size=6, generations=4)
+
+
+def fake_fitness(candidate):
+    """A fitness that depends on the candidate alone, so a replay can be checked."""
+    score = ((candidate[0] * 7 + candidate[1] * 3 + candidate[2]) % 97) / 97
+    return ga.CandidateFitness(score, score * 0.9, 1 - score, score * 0.8)
+
+
+def make_cache(directory, *, contract=None, params=None, identity=None):
+    """A cache in `directory`, with the sidecar the experiment would have written."""
+    return ga.CandidateCache(
+        directory / "candidates.csv",
+        directory / "config.json",
+        identity=GA_IDENTITY if identity is None else identity,
+        wavelengths=GA_WAVELENGTHS,
+        fitness_contract={"epochs": 1} if contract is None else contract,
+        ga_parameters=(GA_PARAMS if params is None else params).as_dict(),
+    )
+
+
+def run_ga(directory, evaluator, **kwargs):
+    """One search over a warm or cold cache in `directory`."""
+    cache = make_cache(directory, **kwargs)
+    random.seed(config.STUDY_SEED)
+    return ga.run_search(GA_BANDS, evaluator, cache, params=GA_PARAMS), cache
+
+
+def test_ga_operators_preserve_order_distinctness_and_axis_bounds():
+    rng = random.Random(19)
+
+    initialized = [ga.initialize_candidate(rng, 5) for _ in range(20)]
+    left, right = ga.crossover_candidates((4, 0, 1), (0, 4, 3), rng, band_count=5, alpha=0.5)
+    mutated = ga.mutate_candidate(
+        (4, 0, 1), rng, band_count=5, mu=0.0, sigma=100.0, gene_probability=1.0
+    )
+    repaired = ga.repair_candidate((3, 3, 1), rng, band_count=5)
+
+    assert all(len(set(candidate)) == 3 for candidate in [*initialized, left, right, mutated])
+    assert all(
+        all(0 <= index < 5 for index in candidate)
+        for candidate in [*initialized, left, right, mutated]
+    )
+    # The repair replaces the duplicate in place: the bands that were already
+    # distinct do not move, so a candidate is never silently reordered.
+    assert repaired[0] == 3
+    assert repaired[2] == 1
+    assert repaired[1] not in {3, 1}
+    with pytest.raises(ValueError, match="at least three bands"):
+        ga.initialize_candidate(rng, 2)
+
+
+def test_ga_search_evaluates_each_candidate_once_and_repeats_from_cache(tmp_path):
+    seen = []
+    result, cache = run_ga(tmp_path, lambda candidate: (seen.append(candidate), fake_fitness(candidate))[1])
+
+    assert seen == list(dict.fromkeys(seen))  # never the same candidate twice
+    assert len(seen) == len(result.fitness) == len(cache.entries)
+    # Not vacuous: the population really does revisit candidates it has seen.
+    assert result.cache_hits > 0
+
+
+def test_ga_search_keeps_a_permutation_of_the_same_bands_apart(tmp_path):
+    cache = make_cache(tmp_path)
+    cache.append((1, 2, 3), fake_fitness((1, 2, 3)), first_generation=0, seconds=1.0)
+    cache.append((3, 2, 1), fake_fitness((3, 2, 1)), first_generation=0, seconds=1.0)
+
+    assert cache.get((1, 2, 3)) != cache.get((3, 2, 1))
+    assert make_cache(tmp_path).restored == 2
+
+
+def test_ga_search_is_not_disturbed_by_an_evaluator_that_reseeds_random(tmp_path):
+    quiet = []
+    noisy = []
+
+    def reseeds_random(candidate):
+        noisy.append(candidate)
+        random.seed(sum(candidate))
+        return fake_fitness(candidate)
+
+    calm, _ = run_ga(tmp_path / "calm", lambda c: (quiet.append(c), fake_fitness(c))[1])
+    loud, _ = run_ga(tmp_path / "loud", reseeds_random)
+
+    assert quiet == noisy
+    assert calm.winner == loud.winner
+
+
+def test_ga_search_resumes_from_a_warm_cache_without_evaluating(tmp_path):
+    first, _ = run_ga(tmp_path, lambda c: fake_fitness(c))
+
+    calls = []
+    second, cache = run_ga(tmp_path, lambda c: calls.append(c))
+
+    assert cache.restored == len(first.fitness)
+    assert calls == []
+    assert second.winner == first.winner
+    assert second.generations == first.generations
+
+
+def test_ga_search_without_evaluation_refuses_a_cache_miss(tmp_path):
+    with pytest.raises(LookupError, match="not in the cache"):
+        run_ga(tmp_path, ga.refuse_to_evaluate)
+
+
+def test_ga_cache_refuses_a_row_written_under_another_candidate_seed(tmp_path):
+    cache = make_cache(tmp_path)
+    cache.append((1, 2, 3), fake_fitness((1, 2, 3)), first_generation=0, seconds=1.0)
+    rows = (tmp_path / "candidates.csv").read_text().splitlines()
+    rows[1] = rows[1].replace(str(ga.candidate_seed((1, 2, 3), GA_IDENTITY)), "12345")
+    (tmp_path / "candidates.csv").write_text("\n".join(rows) + "\n")
+
+    with pytest.raises(ValueError, match="candidate seed"):
+        make_cache(tmp_path)
+
+
+def test_ga_cache_refuses_a_different_fitness_contract(tmp_path):
+    make_cache(tmp_path, contract={"epochs": 1})
+
+    with pytest.raises(ValueError, match="fitness contract"):
+        make_cache(tmp_path, contract={"epochs": 2})
+
+
+def test_ga_cache_only_warns_when_the_ga_parameters_differ(tmp_path, capsys):
+    make_cache(tmp_path)
+
+    make_cache(tmp_path, params=ga.SearchParameters(population_size=8, generations=4))
+
+    assert "GA parameters" in capsys.readouterr().out
+
+
+def test_ga_winner_is_re_tie_broken_over_every_evaluated_candidate(tmp_path):
+    # Every candidate ties on weighted F1, so only the tie-break decides, and it
+    # must reach candidates DEAP's hall of fame never held.
+    tied = ga.CandidateFitness(0.5, 0.5, 0.25, 0.5)
+    result, cache = run_ga(tmp_path, lambda candidate: tied)
+
+    assert result.winner == max(cache.entries, key=lambda c: tuple(-index for index in c))
+
+
+def test_ga_winner_is_never_a_candidate_the_search_did_not_propose(tmp_path):
+    # The cache can hold rows this trajectory never visits: a run with other GA
+    # parameters left them, or ticket 06 preloaded them.  A winner has to be a
+    # candidate the search actually met, however good a stranger's row looks.
+    tied = ga.CandidateFitness(0.5, 0.5, 0.25, 0.5)
+    cache = make_cache(tmp_path)
+    stranger = (0, 1, 2)  # ties, and its low indices would win the tie-break
+    cache.append(stranger, tied, first_generation=0, seconds=1.0)
+
+    random.seed(config.STUDY_SEED)
+    result = ga.run_search(GA_BANDS, lambda candidate: tied, cache, params=GA_PARAMS)
+
+    assert stranger not in result.fitness
+    assert result.winner != stranger
+    assert result.winner in result.fitness

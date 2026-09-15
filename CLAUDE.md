@@ -15,7 +15,7 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 
 - `config.py` – **every constant of the experiment**: paths, class names, device, seeds, partition proportions, GA parameters, CNN hyperparameters, bootstrap. Imported by everything else.
 - `split_dataset.py` – writes `data/evaluation_partitions.csv`: the Acquisition-grouped, class-stratified train/validation/test split.
-- `ga.py <experiment_number>` – the GA search with CNN fitness. Being rewritten by the `protocolo-80-20` feature: `ga.py --evaluate R G B` (train and score one triplet) works; the search itself arrives with ticket 05.
+- `ga.py <experiment_number>` – the GA search with CNN fitness: genetic operators, the on-disk candidate cache that makes a relaunch a replay, and the outputs. `ga.py --evaluate R G B` trains and scores one triplet on its own; `--no-evaluate` replays a search from a warm cache without training anything.
 - `cnn/engine.py`, `cnn/data_setup.py`, `cnn/model.py` – training loops, the data path (manifest, partition, NPZ, normalization, dataset), and the ResNet50 contract (data identity, per-candidate seed, metrics, `evaluate_candidate`).
 - `run.sh` – runs a range of experiments sequentially with `nohup`-style logs.
 - `check_data.py`, `create_summary_table.py`, `plot_fitness_evolution.py` – post-hoc utilities.

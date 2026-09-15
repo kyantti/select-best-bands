@@ -18,12 +18,12 @@ if [ "${SKIP_SYNC:-0}" != "1" ]; then
 fi
 
 echo "=== syntax check ==="
-# ga.py is compiled but not imported: its search half arrives with
-# protocolo-80-20/05, which puts `import ga` back on the line below.
+# check_data.py is compiled but not imported: it still uses the loaders that
+# protocolo-80-20/03 replaced, until ticket 10 rewrites it.
 uv run python -m compileall -q config.py split_dataset.py ga.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
 
 echo "=== import smoke test (config + scripts + cnn package) ==="
-uv run python -c "import config, split_dataset, cnn.engine, cnn.data_setup, cnn.model; print('imports OK')"
+uv run python -c "import config, split_dataset, ga, cnn.engine, cnn.data_setup, cnn.model; print('imports OK')"
 
 echo "=== data files ==="
 uv run python - <<'PY'
