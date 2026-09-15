@@ -1,276 +1,25 @@
-import csv
+"""The data path: manifests, partitions, hypercubes in RAM, and model input.
 
+Ported from fig-aflatoxin's partition stage and evaluation module.  Every step
+that trains or predicts goes through here, so the parts that make the result
+defensible are copied literally: the partition checks that refuse a leak, the
+manifest order the hypercubes are read in, normalization fitted on train
+foreground pixels only, and augmentation that moves image and mask together.
+"""
+
+import csv
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+import numpy as np
 import torch
 from torch.utils.data import Dataset
-import pandas as pd
-import numpy as np
-import os
-# from tqdm import tqdm
-from typing import Optional
-from torchvision import transforms
-from torch.utils.data import DataLoader
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as transform_functional
 
 import config
-
-_cpu_count = os.cpu_count()
-NUM_WORKERS = _cpu_count if _cpu_count is not None else 0
-
-
-class HypercubeDataset(Dataset):
-    """
-    Custom PyTorch Dataset for loading pre-processed hyperspectral data.
-
-    This class is designed to:
-    1. Accept pre-loaded hypercube data and labels directly, OR
-    2. Read a CSV manifest file containing filepaths and labels and load data.
-    3. For a given sample, extract three specified bands to form an RGB-like image.
-    4. Apply transformations (e.g., from torchvision) to the resulting image.
-
-    It assumes the .npy files were created by your preprocessing script and
-    contain NumPy arrays with a dtype of `uint8` and shape (H, W, C).
-    """
-
-    def __init__(self, csv_file=None, band_indices=None, transform=None, 
-                 data_samples=None, labels=None, verbose: bool = False):
-        """
-        Args:
-            csv_file (string, optional): Path to the csv file with 'filepath' and 'label' columns.
-                                       Used only if data_samples and labels are None.
-            band_indices (list or tuple of 3 int): The indices of the three bands
-                                                   to use for the R, G, and B channels.
-            transform (callable, optional): A function/transform from torchvision
-                                            to be applied on a sample.
-            data_samples (list, optional): Pre-loaded list of hypercube arrays.
-                                         If provided, csv_file is ignored.
-            labels (list, optional): Pre-loaded list of labels corresponding to data_samples.
-                                   If provided, csv_file is ignored.
-            verbose (bool, optional): If True, prints additional information during initialization.
-        """
-        # --- 1. Store Initialization Arguments ---
-        self.band_indices = band_indices
-        self.transform = transform
-        self.verbose = verbose
-
-        if band_indices is not None and len(band_indices) != 3:
-            raise ValueError(
-                "`band_indices` must be a list or tuple of exactly 3 integers."
-            )
-
-        # --- 2. Use pre-loaded data OR load from CSV ---
-        if data_samples is not None and labels is not None:
-            # Use pre-loaded data
-            if len(data_samples) != len(labels):
-                raise ValueError("data_samples and labels must have the same length.")
-            
-            self.data_samples = data_samples
-            self.labels = labels
-            if self.verbose:
-                print(f"Dataset initialized with pre-loaded data. Total samples: {len(self.labels)}")
-            
-        elif csv_file is not None:
-            # Load from CSV file (original behavior)
-            if not os.path.exists(csv_file):
-                raise FileNotFoundError(f"The specified CSV file was not found: {csv_file}")
-            
-            annotations = pd.read_csv(csv_file)
-            self.data_samples = []
-            if self.verbose:
-                print(f"Initializing dataset from {csv_file}...")
-            for fpath in annotations["filepath"]:  # tqdm removed
-                hypercube = np.load(fpath)
-                self.data_samples.append(hypercube)
-            self.labels = annotations["label"].tolist()
-            if self.verbose:
-                print(f"Dataset successfully loaded. Total samples: {len(self.labels)}")
-            
-        else:
-            raise ValueError(
-                "Either provide csv_file, or both data_samples and labels."
-            )
-
-    def __len__(self):
-        """Returns the total number of samples in the dataset."""
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        """
-        Retrieves one sample from the dataset at the specified index.
-
-        Args:
-            idx (int): The index of the sample to retrieve.
-
-        Returns:
-            tuple: (image, label) where image is the transformed RGB-like tensor
-                   and label is the corresponding integer label.
-        """
-        # --- 1. Retrieve Pre-loaded Data ---
-        hypercube = self.data_samples[idx]  # This is a uint8 NumPy array
-        label = self.labels[idx]
-
-        # --- 2. Extract Bands to Create an RGB-like Image ---
-        # This creates a (Height, Width, 3) NumPy array of dtype uint8.
-        if self.band_indices is not None:
-            rgb_image = hypercube[:, :, self.band_indices]
-        else:
-            # If no band_indices specified, assume hypercube already has 3 channels
-            if hypercube.shape[2] != 3:
-                raise ValueError(
-                    f"When band_indices is None, hypercube must have exactly 3 channels, "
-                    f"but got {hypercube.shape[2]} channels."
-                )
-            rgb_image = hypercube
-
-        # --- 3. Apply Transformations ---
-        # The `transform` pipeline is crucial. `transforms.ToTensor()` will convert
-        # the (H, W, C) uint8 NumPy array into a (C, H, W) float32 Torch tensor
-        # and automatically scale the values from the [0, 255] range to [0.0, 1.0].
-        if self.transform:
-            image_tensor = self.transform(rgb_image)
-        else:
-            # If no transform is provided, we must manually convert to a tensor and scale.
-            image_tensor = (
-                torch.from_numpy(rgb_image.transpose((2, 0, 1))).to(torch.float32)
-                / 255.0
-            )
-
-        return image_tensor, label
-
-    def get_labels(self):
-        """Returns the list of labels for all samples in the dataset."""
-        return self.labels
-
-    def update_band_indices(self, new_band_indices):
-        """
-        Update the band indices for RGB extraction.
-        
-        Args:
-            new_band_indices (list or tuple of 3 int): New band indices to use.
-        """
-        if len(new_band_indices) != 3:
-            raise ValueError(
-                "`new_band_indices` must be a list or tuple of exactly 3 integers."
-            )
-        self.band_indices = new_band_indices
-
-
-def load_hypercubes_from_csv(csv_file, verbose: bool = False):
-    """
-    Utility function to load all hypercubes from a CSV file into memory.
-    
-    Args:
-        csv_file (str): Path to CSV file with 'filepath' and 'label' columns.
-        verbose (bool, optional): If True, prints additional information during loading.
-        
-    Returns:
-        tuple: (data_samples, labels) where data_samples is a list of numpy arrays
-               and labels is a list of corresponding labels.
-    """
-    if not os.path.exists(csv_file):
-        raise FileNotFoundError(f"The specified CSV file was not found: {csv_file}")
-    
-    annotations = pd.read_csv(csv_file)
-    data_samples = []
-    if verbose:
-        print(f"Loading hypercubes from {csv_file}...")
-    for fpath in annotations["filepath"]:  # tqdm removed
-        hypercube = np.load(fpath)
-        data_samples.append(hypercube)
-    labels = annotations["label"].tolist()
-    if verbose:
-        print(f"Successfully loaded {len(labels)} hypercubes into memory.")
-    return data_samples, labels
-
-
-def create_train_dataloader(
-    train_csv: Optional[str] = None,
-    band_indices: Optional[list[int]] = None,
-    transform: Optional[transforms.Compose] = None,
-    batch_size: int = 32,
-    num_workers: int = NUM_WORKERS,
-    data_samples: Optional[list] = None,
-    labels: Optional[list[int]] = None,
-    verbose: bool = False,
-):
-    """
-    Create train dataloader with either CSV file or pre-loaded data.
-    
-    Args:
-        train_csv: Path to CSV file (used if data_samples/labels are None)
-        band_indices: List of 3 band indices for RGB channels
-        transform: Torchvision transforms
-        batch_size: Batch size for dataloader
-        num_workers: Number of worker processes
-        data_samples: Pre-loaded hypercube data (optional)
-        labels: Pre-loaded labels (optional)
-        verbose: If True, prints additional information during dataloader creation.
-    """
-    train_data = HypercubeDataset(
-        csv_file=train_csv,
-        band_indices=band_indices, 
-        transform=transform,
-        data_samples=data_samples,
-        labels=labels,
-        verbose=verbose
-    )
-
-    train_dataloader = DataLoader(
-        train_data,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-
-    if verbose:
-        print("Band indices for training dataloader:", band_indices)
-
-    return train_dataloader
-
-
-def create_test_dataloader(
-    test_csv: Optional[str] = None,
-    band_indices: Optional[list[int]] = None,
-    transform: Optional[transforms.Compose] = None,
-    batch_size: int = 32,
-    num_workers: int = NUM_WORKERS,
-    data_samples: Optional[list] = None,
-    labels: Optional[list] = None,
-    verbose: bool = False,
-):
-    """
-    Create test dataloader with either CSV file or pre-loaded data.
-    
-    Args:
-        test_csv: Path to CSV file (used if data_samples/labels are None)
-        band_indices: List of 3 band indices for RGB channels
-        transform: Torchvision transforms
-        batch_size: Batch size for dataloader
-        num_workers: Number of worker processes
-        data_samples: Pre-loaded hypercube data (optional)
-        labels: Pre-loaded labels (optional)
-        verbose: If True, prints additional information during dataloader creation.
-    """
-    test_data = HypercubeDataset(
-        csv_file=test_csv,
-        band_indices=band_indices,
-        transform=transform,
-        data_samples=data_samples,
-        labels=labels,
-        verbose=verbose
-    )
-
-    test_dataloader = DataLoader(
-        test_data,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-
-    if verbose:
-        print("Band indices for test dataloader:", band_indices)
-
-    return test_dataloader
 
 # --- Evaluation partitions -------------------------------------------------
 # Ported from fig-aflatoxin's partition stage: the manifest schemas and the
@@ -320,7 +69,7 @@ def read_manifest(path, fields: tuple[str, ...], *, name: str) -> list[dict[str,
     return rows
 
 
-def load_cropped_hypercubes(path) -> list[dict[str, str]]:
+def load_manifest(path) -> list[dict[str, str]]:
     """Load the CroppedHypercube manifest, checking identities and classes.
 
     Checksums are deliberately not verified on load; verifying the 1124 NPZ
@@ -342,6 +91,13 @@ def load_cropped_hypercubes(path) -> list[dict[str, str]]:
             raise ValueError(f"duplicate or missing crop identity '{crop_id}'")
         if not acquisition_id:
             raise ValueError("missing Acquisition identity")
+        if PurePosixPath(identity).name != identity or "\\" in identity:
+            raise ValueError(f"invalid CroppedHypercube identity '{identity}'")
+        if any(
+            not row[field]
+            for field in ("annotation_id", "spectral_axis_id", "artifact_checksum")
+        ):
+            raise ValueError(f"missing lineage for CroppedHypercube '{identity}'")
         prior_class = acquisition_classes.setdefault(acquisition_id, row["severity_class"])
         if prior_class != row["severity_class"]:
             raise ValueError(f"conflicting SeverityClass for Acquisition '{acquisition_id}'")
@@ -421,3 +177,325 @@ def load_partitions(path) -> list[dict[str, str]]:
     """Load the evaluation-partition manifest, refusing any leak."""
     rows = read_manifest(path, PARTITION_FIELDS, name="evaluation partition manifest")
     return validate_partition_rows(rows)
+
+
+# --- Spectral axis ---------------------------------------------------------
+
+SPECTRAL_AXIS_FIELDS = (
+    "schema_version",
+    "spectral_axis_id",
+    "band_count",
+    "wavelengths_nm",
+)
+
+
+def json_sha256(value) -> str:
+    """Hash a JSON-serializable value under one canonical encoding."""
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def spectral_axis_id(wavelengths) -> str:
+    """The content address of an axis: what its `spectral_axis_id` must equal.
+
+    It lets a caller check that the crops it loaded were cut against the same
+    axis the wavelengths came from, without reading the manifest again.
+    """
+    return json_sha256({"wavelengths_nm": tuple(wavelengths)})
+
+
+def load_spectral_axis(path) -> list[float]:
+    """Read the wavelengths, in nm, of the one SpectralAxis the dataset uses.
+
+    The band range of the whole search comes from the length of this list, never
+    from a constant.
+
+    Raises:
+        ValueError: If the manifest does not hold exactly one axis whose
+            wavelengths are as many as its band count, positive, increasing, and
+            hashing to the `spectral_axis_id` the manifest claims for them.
+    """
+    rows = read_manifest(path, SPECTRAL_AXIS_FIELDS, name="SpectralAxis manifest")
+    if len(rows) != 1:
+        raise ValueError("SpectralAxis manifest must describe exactly one axis")
+    row = rows[0]
+    try:
+        wavelengths = [float(value) for value in json.loads(row["wavelengths_nm"])]
+        band_count = int(row["band_count"])
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid SpectralAxis definition '{row['spectral_axis_id']}'") from exc
+    if (
+        not row["spectral_axis_id"]
+        or not wavelengths
+        or len(wavelengths) != band_count
+        or any(not np.isfinite(value) or value <= 0 for value in wavelengths)
+        or any(right <= left for left, right in zip(wavelengths, wavelengths[1:], strict=False))
+        or spectral_axis_id(wavelengths) != row["spectral_axis_id"]
+    ):
+        raise ValueError(f"invalid SpectralAxis definition '{row['spectral_axis_id']}'")
+    return wavelengths
+
+
+def wavelengths_of(bands, wavelengths: list[float]) -> tuple[float, float, float]:
+    """Translate three distinct in-range band indices to their wavelengths in nm.
+
+    This is the only source of nm: every table, summary and figure that names a
+    wavelength gets it from here, in the band order the network sees.
+
+    Raises:
+        ValueError: If the values are not exactly three distinct indices inside
+            the SpectralAxis.
+    """
+    try:
+        indices = tuple(bands)
+    except TypeError as exc:
+        raise ValueError("a band triplet requires exactly three distinct in-range indices") from exc
+    if (
+        len(indices) != 3
+        or any(type(index) is not int for index in indices)
+        or len(set(indices)) != 3
+        or any(index < 0 or index >= len(wavelengths) for index in indices)
+    ):
+        raise ValueError("a band triplet requires exactly three distinct in-range indices")
+    return (wavelengths[indices[0]], wavelengths[indices[1]], wavelengths[indices[2]])
+
+
+# --- Hypercubes in memory --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Hypercube:
+    """One masked float32 crop, in RAM, with the identity it came from."""
+
+    cropped_hypercube_id: str
+    crop_id: str
+    acquisition_id: str
+    severity_class: int
+    spectral_axis_id: str
+    reflectance: np.ndarray
+    foreground_mask: np.ndarray
+
+
+def validate_arrays(reflectance: np.ndarray, foreground_mask: np.ndarray) -> None:
+    """Refuse arrays that break the CroppedHypercube contract."""
+    if (
+        reflectance.dtype != np.float32
+        or reflectance.ndim != 3
+        or any(dimension <= 0 for dimension in reflectance.shape)
+        or not np.isfinite(reflectance).all()
+        or np.any((reflectance < 0) | (reflectance > 1))
+    ):
+        raise ValueError(
+            "reflectance must be a finite float32 (height, width, bands) array in [0, 1]"
+        )
+    if foreground_mask.dtype != np.bool_ or foreground_mask.shape != reflectance.shape[:2]:
+        raise ValueError("foreground_mask must be boolean and match reflectance spatial shape")
+    if not foreground_mask.any():
+        raise ValueError("foreground_mask must contain foreground pixels")
+    if np.any(reflectance[~foreground_mask] != 0):
+        raise ValueError("background reflectance must be zero outside foreground_mask")
+
+
+def read_npz(path) -> tuple[np.ndarray, np.ndarray]:
+    """Read one CroppedHypercube artifact, without unpickling anything."""
+    if path.suffix != ".npz":
+        raise ValueError("CroppedHypercube artifacts must be NPZ")
+    try:
+        with np.load(path, allow_pickle=False) as artifact:
+            if set(artifact.files) != {"reflectance", "foreground_mask"}:
+                raise ValueError("CroppedHypercube NPZ has an incompatible schema")
+            reflectance = artifact["reflectance"]
+            foreground_mask = artifact["foreground_mask"]
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("CroppedHypercube"):
+            raise
+        raise ValueError(f"cannot load CroppedHypercube '{path}': {exc}") from exc
+    validate_arrays(reflectance, foreground_mask)
+    return reflectance, foreground_mask
+
+
+def load_hypercubes(manifest_path, rows: list[dict[str, str]], *, verbose=True) -> list[Hypercube]:
+    """Load into RAM the crops named by `rows`, in the order of the manifest.
+
+    The manifest is walked in its own order and filtered by the requested
+    identities, never iterated from a set, so two runs load the same arrays in
+    the same order.  Loading with train rows only therefore cannot return a test
+    crop: what is not asked for is not read.
+
+    Raises:
+        ValueError: If an artifact is malformed, if the manifest disagrees with
+            the partition rows about a crop's lineage, or if a requested identity
+            is not in the manifest.
+    """
+    manifest_path = Path(manifest_path)
+    rows_by_id = {row["cropped_hypercube_id"]: row for row in rows}
+    requested = set(rows_by_id)
+    manifest = load_manifest(manifest_path)
+    hypercubes = []
+    for entry in manifest:
+        identity = entry["cropped_hypercube_id"]
+        if identity not in requested:
+            continue
+        try:
+            expected_shape = (int(entry["height"]), int(entry["width"]), int(entry["band_count"]))
+        except ValueError as exc:
+            raise ValueError(f"invalid metadata for CroppedHypercube '{identity}'") from exc
+        relative = PurePosixPath(entry["artifact_relative_path"])
+        if relative.is_absolute() or ".." in relative.parts or "\\" in str(relative):
+            raise ValueError(f"invalid artifact path for CroppedHypercube '{identity}'")
+        try:
+            reflectance, foreground_mask = read_npz(manifest_path.parent.joinpath(*relative.parts))
+        except ValueError as exc:
+            raise ValueError(f"invalid CroppedHypercube '{identity}': {exc}") from exc
+        if reflectance.shape != expected_shape:
+            raise ValueError(f"shape mismatch for CroppedHypercube '{identity}'")
+        row = rows_by_id[identity]
+        if (
+            row["crop_id"] != entry["crop_id"]
+            or row["acquisition_id"] != entry["acquisition_id"]
+            or row["severity_class"] != entry["severity_class"]
+        ):
+            raise ValueError(f"partition lineage mismatch for CroppedHypercube '{identity}'")
+        hypercubes.append(
+            Hypercube(
+                cropped_hypercube_id=identity,
+                crop_id=entry["crop_id"],
+                acquisition_id=entry["acquisition_id"],
+                severity_class=config.CLASS_NAMES.index(entry["severity_class"]),
+                spectral_axis_id=entry["spectral_axis_id"],
+                reflectance=reflectance,
+                foreground_mask=foreground_mask,
+            )
+        )
+        if verbose and len(hypercubes) % 100 == 0:
+            print(f"  loaded {len(hypercubes)}/{len(requested)} hypercubes")
+    loaded = {hypercube.cropped_hypercube_id for hypercube in hypercubes}
+    if loaded != requested:
+        raise ValueError(
+            f"CroppedHypercube manifest is missing requested identities: {sorted(requested - loaded)}"
+        )
+    if verbose and len(hypercubes) % 100 != 0:
+        print(f"  loaded {len(hypercubes)}/{len(requested)} hypercubes")
+    return hypercubes
+
+
+# --- Normalization and model input -----------------------------------------
+
+
+def fit_foreground_normalization(hypercubes: list[Hypercube], indices):
+    """Fit per-channel mean and std on training foreground pixels only.
+
+    Background pixels are excluded so masked-out area cannot shift the
+    reflectance distribution, and the test crops are simply not here.
+
+    Raises:
+        ValueError: If no hypercubes were supplied, or if a channel has no
+            variance to divide by.
+    """
+    if not hypercubes:
+        raise ValueError("cannot fit normalization without training hypercubes")
+    foreground = np.concatenate(
+        [
+            hypercube.reflectance[:, :, indices][hypercube.foreground_mask]
+            for hypercube in hypercubes
+        ]
+    )
+    mean = foreground.mean(axis=0, dtype=np.float64)
+    std = foreground.std(axis=0, dtype=np.float64)
+    if not np.isfinite(mean).all() or not np.isfinite(std).all() or np.any(std <= 0):
+        raise ValueError("training foreground normalization has a zero-variance channel")
+    return (
+        (float(mean[0]), float(mean[1]), float(mean[2])),
+        (float(std[0]), float(std[1]), float(std[2])),
+    )
+
+
+def apply_foreground_normalization(hypercube: Hypercube, indices, mean, std):
+    """Normalize the selected bands and set the masked background back to zero."""
+    image = hypercube.reflectance[:, :, indices].astype(np.float32, copy=True)
+    image = (image - np.asarray(mean, dtype=np.float32)) / np.asarray(std, dtype=np.float32)
+    image[~hypercube.foreground_mask] = 0
+    return image, hypercube.foreground_mask.copy()
+
+
+def prepare_model_input(
+    hypercube: Hypercube,
+    indices,
+    mean,
+    std,
+    *,
+    size,
+    horizontal_flip: bool = False,
+    vertical_flip: bool = False,
+    rotation_degrees: float = 0,
+):
+    """Normalize, resize and optionally augment one hypercube for the model.
+
+    The image and its foreground mask are transformed together, so augmentation
+    cannot separate a pixel from its mask, and the background is zeroed again
+    afterwards so no reflectance is invented where there is no fig.
+    """
+    image, mask = apply_foreground_normalization(hypercube, indices, mean, std)
+    image_tensor = torch.from_numpy(image.transpose(2, 0, 1))
+    mask_tensor = torch.from_numpy(mask[None].astype(np.float32))
+    image_tensor = transform_functional.resize(
+        image_tensor, list(size), interpolation=InterpolationMode.BILINEAR, antialias=True
+    )
+    mask_tensor = transform_functional.resize(
+        mask_tensor, list(size), interpolation=InterpolationMode.NEAREST
+    )
+    if horizontal_flip:
+        image_tensor = transform_functional.hflip(image_tensor)
+        mask_tensor = transform_functional.hflip(mask_tensor)
+    if vertical_flip:
+        image_tensor = transform_functional.vflip(image_tensor)
+        mask_tensor = transform_functional.vflip(mask_tensor)
+    if rotation_degrees:
+        image_tensor = transform_functional.rotate(
+            image_tensor,
+            rotation_degrees,
+            interpolation=InterpolationMode.BILINEAR,
+            fill=[0.0],
+        )
+        mask_tensor = transform_functional.rotate(
+            mask_tensor,
+            rotation_degrees,
+            interpolation=InterpolationMode.NEAREST,
+            fill=[0.0],
+        )
+    aligned_mask = mask_tensor.squeeze(0) >= 0.5
+    image_tensor[:, ~aligned_mask] = 0
+    return image_tensor, aligned_mask
+
+
+class SelectedBandDataset(Dataset):
+    """The crops of one partition, as three-channel images of the chosen bands.
+
+    Augmentation decisions are drawn with `torch.rand`, so DataLoader workers
+    seeded from the loader's generator reproduce them.
+    """
+
+    def __init__(self, hypercubes: list[Hypercube], indices, mean, std, size, *, training: bool):
+        self.hypercubes = hypercubes
+        self.indices = indices
+        self.mean = mean
+        self.std = std
+        self.size = size
+        self.training = training
+
+    def __len__(self) -> int:
+        return len(self.hypercubes)
+
+    def __getitem__(self, index: int):
+        hypercube = self.hypercubes[index]
+        image_tensor, _ = prepare_model_input(
+            hypercube,
+            self.indices,
+            self.mean,
+            self.std,
+            size=self.size,
+            horizontal_flip=self.training and bool(torch.rand(()) < 0.5),
+            vertical_flip=self.training and bool(torch.rand(()) < 0.5),
+            rotation_degrees=float(torch.empty(()).uniform_(-15, 15)) if self.training else 0,
+        )
+        return image_tensor, int(hypercube.severity_class)

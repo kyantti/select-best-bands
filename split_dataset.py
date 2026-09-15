@@ -15,7 +15,7 @@ from collections import Counter
 from sklearn.model_selection import train_test_split
 
 import config
-from cnn.data_setup import PARTITION_FIELDS, load_cropped_hypercubes, validate_partition_rows
+from cnn.data_setup import PARTITION_FIELDS, load_manifest, validate_partition_rows
 
 
 def stratified_split(
@@ -151,7 +151,7 @@ def summarize(rows: list[dict[str, str]]) -> None:
 def main() -> None:
     manifest = config.HYPERCUBES_MANIFEST
     output = config.PARTITIONS
-    source_rows = load_cropped_hypercubes(manifest)
+    source_rows = load_manifest(manifest)
     rows = assign_partitions(
         source_rows,
         seed=config.PARTITION_SEED,

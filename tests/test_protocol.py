@@ -6,15 +6,34 @@ of it is written.
 """
 
 import csv
+import json
 
+import numpy as np
 import pytest
+import torch
 
 import config
-from cnn.data_setup import PARTITION_FIELDS, load_cropped_hypercubes, load_partitions
+from cnn.data_setup import (
+    CROPPED_HYPERCUBE_FIELDS,
+    PARTITION_FIELDS,
+    SelectedBandDataset,
+    apply_foreground_normalization,
+    fit_foreground_normalization,
+    load_hypercubes,
+    load_manifest,
+    load_partitions,
+    load_spectral_axis,
+    prepare_model_input,
+    spectral_axis_id,
+    wavelengths_of,
+)
 from split_dataset import assign_partitions
+
+BANDS = 5
 
 REFERENCE_MANIFEST = config.ROOT / "tests" / "data" / "reference_cropped_hypercubes.csv"
 REFERENCE_PARTITIONS = config.ROOT / "tests" / "data" / "reference_evaluation_partitions.csv"
+REFERENCE_SPECTRAL_AXES = config.ROOT / "tests" / "data" / "reference_spectral_axes.csv"
 
 
 def synthetic_manifest(class_counts=(6, 6, 6, 6), crops_per_acquisition=3):
@@ -84,7 +103,7 @@ def test_split_reproduces_the_reference_partition():
     with REFERENCE_PARTITIONS.open(newline="") as source:
         expected = list(csv.DictReader(source))
 
-    rows = split(load_cropped_hypercubes(REFERENCE_MANIFEST))
+    rows = split(load_manifest(REFERENCE_MANIFEST))
 
     assert rows == expected
 
@@ -97,7 +116,7 @@ def test_split_reproduces_the_reference_partition():
 def test_split_of_the_reference_manifest_has_the_recorded_sizes(group, acquisitions, crops):
     rows = [
         row
-        for row in split(load_cropped_hypercubes(REFERENCE_MANIFEST))
+        for row in split(load_manifest(REFERENCE_MANIFEST))
         if (row["partition"], row["selection_partition"]) == group
     ]
 
@@ -222,3 +241,316 @@ def test_split_manifest_of_the_reference_partition_loads():
     assert len(rows) == 1124
     acquisitions = assignments_by_acquisition(rows)
     assert len(acquisitions) == 36
+
+
+# --- Hypercube loading, normalization and augmentation ----------------------
+
+
+def crop(value, *, height=1, width=1, foreground=None):
+    """A reflectance cube whose foreground pixels all hold `value` per band."""
+    reflectance = np.zeros((height, width, BANDS), dtype=np.float32)
+    mask = np.zeros((height, width), dtype=np.bool_) if foreground is None else foreground.copy()
+    if foreground is None:
+        mask[:] = True
+    reflectance[mask] = np.asarray(value, dtype=np.float32)
+    return reflectance, mask
+
+
+def write_dataset(directory, crops):
+    """Write a CroppedHypercube manifest and its NPZ artifacts; return the manifest path."""
+    manifest = directory / "cropped_hypercubes.csv"
+    artifacts = directory / "cropped_hypercubes"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for identity, acquisition, severity, (reflectance, mask) in crops:
+        np.savez_compressed(
+            artifacts / f"{identity}.npz", reflectance=reflectance, foreground_mask=mask
+        )
+        rows.append(
+            {
+                "schema_version": "1",
+                "cropped_hypercube_id": identity,
+                "crop_id": f"crop-{identity}",
+                "acquisition_id": acquisition,
+                "annotation_id": f"annotation-{identity}",
+                "severity_class": severity,
+                "height": str(reflectance.shape[0]),
+                "width": str(reflectance.shape[1]),
+                "band_count": str(reflectance.shape[2]),
+                "artifact_relative_path": f"cropped_hypercubes/{identity}.npz",
+                "artifact_checksum": "unchecked",
+                "spectral_axis_id": "axis",
+            }
+        )
+    with manifest.open("w", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=CROPPED_HYPERCUBE_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return manifest
+
+
+def partition_row(identity, acquisition, severity, partition, selection):
+    return {
+        "schema_version": "1",
+        "cropped_hypercube_id": identity,
+        "crop_id": f"crop-{identity}",
+        "acquisition_id": acquisition,
+        "severity_class": severity,
+        "partition": partition,
+        "selection_partition": selection,
+    }
+
+
+@pytest.fixture
+def tiny_dataset(tmp_path):
+    """Two train-fit crops, one validation crop and one test crop.
+
+    The manifest order is deliberately not the alphabetical order of the
+    identities, so a loader that sorted them would be caught.
+    """
+    crops = [
+        ("fit-z", "acq-train", "C0", crop(0.2)),
+        ("fit-a", "acq-train", "C0", crop(0.6)),
+        ("val-a", "acq-validation", "C1", crop(0.4)),
+        ("test-a", "acq-test", "C3", crop(0.9)),
+    ]
+    manifest = write_dataset(tmp_path, crops)
+    rows = {
+        "fit": [
+            partition_row("fit-z", "acq-train", "C0", "train", "train"),
+            partition_row("fit-a", "acq-train", "C0", "train", "train"),
+        ],
+        "validation": [partition_row("val-a", "acq-validation", "C1", "train", "validation")],
+        "test": [partition_row("test-a", "acq-test", "C3", "test", "")],
+    }
+    return manifest, rows
+
+
+def test_load_hypercubes_never_returns_a_test_identity(tiny_dataset):
+    manifest, rows = tiny_dataset
+
+    loaded = load_hypercubes(manifest, rows["fit"] + rows["validation"], verbose=False)
+
+    identities = [hypercube.cropped_hypercube_id for hypercube in loaded]
+    assert identities == ["fit-z", "fit-a", "val-a"]
+    assert "test-a" not in identities
+
+
+def test_load_hypercubes_follows_manifest_order_not_the_order_asked_for(tiny_dataset):
+    manifest, rows = tiny_dataset
+    asked = list(reversed(rows["fit"]))
+
+    loaded = load_hypercubes(manifest, asked, verbose=False)
+
+    # Manifest order, which here is neither the order asked for nor sorted order.
+    assert [hypercube.cropped_hypercube_id for hypercube in loaded] == ["fit-z", "fit-a"]
+
+
+def test_load_hypercubes_rejects_lineage_that_disagrees_with_the_manifest(tiny_dataset):
+    manifest, rows = tiny_dataset
+    tampered = [dict(rows["fit"][0], severity_class="C3")]
+
+    with pytest.raises(ValueError, match="lineage mismatch"):
+        load_hypercubes(manifest, tampered, verbose=False)
+
+
+def test_load_hypercubes_rejects_an_identity_the_manifest_does_not_have(tiny_dataset):
+    manifest, rows = tiny_dataset
+    absent = [partition_row("ghost", "acq-train", "C0", "train", "train")]
+
+    with pytest.raises(ValueError, match="missing requested identities"):
+        load_hypercubes(manifest, absent, verbose=False)
+
+
+def test_load_hypercubes_carries_the_class_and_the_spectral_axis(tiny_dataset):
+    manifest, rows = tiny_dataset
+
+    loaded = load_hypercubes(manifest, rows["validation"], verbose=False)
+
+    assert loaded[0].severity_class == 1
+    assert loaded[0].spectral_axis_id == "axis"
+    assert loaded[0].reflectance.dtype == np.float32
+
+
+def test_load_spectral_axis_gives_the_selected_bands_their_wavelengths():
+    wavelengths = load_spectral_axis(REFERENCE_SPECTRAL_AXES)
+
+    assert len(wavelengths) == 448
+    # Exactly what the 10 Sep run recorded for the winner. Its artifacts hold
+    # 891.02 and 697.05; the thesis prose rounds them by hand to 891,0 and 697,1.
+    assert wavelengths_of((366, 262, 225), wavelengths) == (891.02, 747.5, 697.05)
+
+
+@pytest.mark.parametrize(
+    "bands",
+    [(1, 1, 2), (1, 2), (1, 2, 448), (-1, 2, 3), (1.0, 2, 3)],
+    ids=["repeated", "two", "out-of-range", "negative", "not-an-int"],
+)
+def test_load_spectral_axis_refuses_a_triplet_that_is_not_three_distinct_bands(bands):
+    wavelengths = load_spectral_axis(REFERENCE_SPECTRAL_AXES)
+
+    with pytest.raises(ValueError, match="three distinct in-range"):
+        wavelengths_of(bands, wavelengths)
+
+
+def test_load_spectral_axis_refuses_wavelengths_that_are_not_the_axis_they_claim(tmp_path):
+    """The axis id is the content address of its wavelengths, so an edited row shows."""
+    rows = list(csv.DictReader(REFERENCE_SPECTRAL_AXES.open(newline="")))
+    edited = json.loads(rows[0]["wavelengths_nm"])
+    edited[0] = edited[0] + 0.01
+    rows[0]["wavelengths_nm"] = json.dumps(edited, separators=(",", ":"))
+    path = tmp_path / "spectral_axes.csv"
+    with path.open("w", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=tuple(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(ValueError, match="invalid SpectralAxis definition"):
+        load_spectral_axis(path)
+
+
+def test_load_spectral_axis_hashes_to_the_id_the_crops_were_cut_against():
+    wavelengths = load_spectral_axis(REFERENCE_SPECTRAL_AXES)
+    manifest_row = next(csv.DictReader(REFERENCE_MANIFEST.open(newline="")))
+
+    assert spectral_axis_id(wavelengths) == manifest_row["spectral_axis_id"]
+
+
+@pytest.mark.skipif(
+    not config.SPECTRAL_AXES.exists(), reason="data/ is gitignored and absent here"
+)
+def test_load_spectral_axis_reads_the_axis_the_reference_was_taken_from():
+    assert config.SPECTRAL_AXES.read_bytes() == REFERENCE_SPECTRAL_AXES.read_bytes()
+
+
+def test_normalization_is_fitted_on_foreground_pixels_only(tmp_path):
+    foreground = np.array([[True, False]])
+    crops = [
+        ("fit-a", "acq", "C0", crop(0.2, height=1, width=2, foreground=foreground)),
+        ("fit-b", "acq", "C0", crop(0.6, height=1, width=2, foreground=foreground)),
+    ]
+    manifest = write_dataset(tmp_path, crops)
+    rows = [
+        partition_row("fit-a", "acq", "C0", "train", "train"),
+        partition_row("fit-b", "acq", "C0", "train", "train"),
+    ]
+    hypercubes = load_hypercubes(manifest, rows, verbose=False)
+
+    mean, std = fit_foreground_normalization(hypercubes, (0, 1, 2))
+
+    # Each crop has one foreground pixel and one zero background pixel; counting
+    # the background in would drag the mean to 0.2 and the population std to 0.28.
+    assert mean == pytest.approx((0.4, 0.4, 0.4))
+    assert std == pytest.approx((0.2, 0.2, 0.2))
+
+
+def test_normalization_fails_on_a_zero_variance_channel(tmp_path):
+    manifest = write_dataset(tmp_path, [("fit-a", "acq", "C0", crop(0.4))])
+    rows = [partition_row("fit-a", "acq", "C0", "train", "train")]
+    hypercubes = load_hypercubes(manifest, rows, verbose=False)
+
+    with pytest.raises(ValueError, match="zero-variance channel"):
+        fit_foreground_normalization(hypercubes, (0, 1, 2))
+
+
+def test_normalization_keeps_the_background_at_zero(tmp_path):
+    foreground = np.array([[True, False]])
+    crops = [
+        ("fit-a", "acq", "C0", crop(0.2, height=1, width=2, foreground=foreground)),
+        ("fit-b", "acq", "C0", crop(0.6, height=1, width=2, foreground=foreground)),
+    ]
+    manifest = write_dataset(tmp_path, crops)
+    rows = [
+        partition_row("fit-a", "acq", "C0", "train", "train"),
+        partition_row("fit-b", "acq", "C0", "train", "train"),
+    ]
+    hypercubes = load_hypercubes(manifest, rows, verbose=False)
+    mean, std = fit_foreground_normalization(hypercubes, (0, 1, 2))
+
+    image, mask = apply_foreground_normalization(hypercubes[0], (0, 1, 2), mean, std)
+
+    assert image.dtype == np.float32
+    assert np.array_equal(mask, hypercubes[0].foreground_mask)
+    assert (image[~mask] == 0).all()
+    assert image[mask][0] == pytest.approx(-1.0)  # 0.2 is one population std below 0.4
+
+
+def augmentable(tmp_path):
+    """One crop whose foreground is its left column, plus fitted statistics."""
+    foreground = np.array([[True, False], [True, False]])
+    crops = [
+        ("fit-a", "acq", "C0", crop(0.2, height=2, width=2, foreground=foreground)),
+        ("fit-b", "acq", "C0", crop(0.6, height=2, width=2, foreground=foreground)),
+    ]
+    manifest = write_dataset(tmp_path, crops)
+    rows = [
+        partition_row("fit-a", "acq", "C0", "train", "train"),
+        partition_row("fit-b", "acq", "C0", "train", "train"),
+    ]
+    hypercubes = load_hypercubes(manifest, rows, verbose=False)
+    return hypercubes, fit_foreground_normalization(hypercubes, (0, 1, 2))
+
+
+def test_augmentation_moves_the_mask_with_the_image(tmp_path):
+    hypercubes, (mean, std) = augmentable(tmp_path)
+
+    plain, plain_mask = prepare_model_input(
+        hypercubes[0], (0, 1, 2), mean, std, size=(2, 2)
+    )
+    flipped, flipped_mask = prepare_model_input(
+        hypercubes[0], (0, 1, 2), mean, std, size=(2, 2), horizontal_flip=True
+    )
+
+    assert torch.equal(flipped_mask, torch.flip(plain_mask, dims=[1]))
+    assert torch.equal(flipped, torch.flip(plain, dims=[2]))
+
+
+@pytest.mark.parametrize(
+    "augmentation",
+    [
+        {"horizontal_flip": True},
+        {"vertical_flip": True},
+        {"rotation_degrees": 12.0},
+        {"horizontal_flip": True, "vertical_flip": True, "rotation_degrees": -7.5},
+    ],
+    ids=["hflip", "vflip", "rotation", "all"],
+)
+def test_augmentation_leaves_no_reflectance_outside_the_mask(tmp_path, augmentation):
+    hypercubes, (mean, std) = augmentable(tmp_path)
+
+    image, mask = prepare_model_input(
+        hypercubes[0], (0, 1, 2), mean, std, size=(8, 8), **augmentation
+    )
+
+    assert mask.any()
+    assert (image[:, ~mask] == 0).all()
+
+
+def test_augmentation_repeats_when_the_torch_generator_is_seeded_the_same(tmp_path):
+    hypercubes, (mean, std) = augmentable(tmp_path)
+    dataset = SelectedBandDataset(hypercubes, (0, 1, 2), mean, std, (8, 8), training=True)
+    unaugmented, _ = prepare_model_input(hypercubes[0], (0, 1, 2), mean, std, size=(8, 8))
+
+    torch.manual_seed(1729)
+    first = [dataset[index][0] for index in range(len(dataset))]
+    torch.manual_seed(1729)
+    again = [dataset[index][0] for index in range(len(dataset))]
+    torch.manual_seed(2718)
+    elsewhere = [dataset[index][0] for index in range(len(dataset))]
+
+    assert all(torch.equal(left, right) for left, right in zip(first, again, strict=True))
+    # Not vacuous: the draws really do augment, and another seed draws otherwise.
+    assert not torch.equal(first[0], unaugmented)
+    assert not all(torch.equal(left, right) for left, right in zip(first, elsewhere, strict=True))
+
+
+def test_augmentation_is_off_when_the_dataset_is_not_training(tmp_path):
+    hypercubes, (mean, std) = augmentable(tmp_path)
+    dataset = SelectedBandDataset(hypercubes, (0, 1, 2), mean, std, (8, 8), training=False)
+    expected, _ = prepare_model_input(hypercubes[0], (0, 1, 2), mean, std, size=(8, 8))
+
+    torch.manual_seed(0)
+    image, label = dataset[0]
+
+    assert torch.equal(image, expected)
+    assert label == 0

@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Last Updated:** 2026-09-15 (noche, 2)
+**Last Updated:** 2026-09-15 (noche, 3)
 **Branch:** feature/protocolo-80-20 (creada desde `feature/experiments`@9075d9b, que contiene b7f1fc9)
-**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01 y 02 `done`**; ninguno `in-progress`. Next pick: protocolo-80-20/03 – Hypercube loading, train-only normalization, augmentation and training engine (`ready-for-agent`, su bloqueo 02 está `done`).
+**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01, 02 y 03 `done`**; ninguno `in-progress`. Next pick: protocolo-80-20/04 – Evaluate one band triplet from the command line (`ready-for-agent`, su bloqueo 03 está `done`).
 
 **No empieces por repo-health/02.** La feature `protocolo-80-20` reescribe `ga.py` entero, así que 02 (restaurar el import de `engine2`), 03 (overrides por entorno) y 04 (tests de los operadores viejos) quedan sin objeto. Están pendientes de triaje por el autor. `repo-health/05` sigue siendo válido e independiente; `06` lo absorbe el README nuevo.
 
@@ -22,12 +22,12 @@
 
 ### What's In Progress
 
-- [ ] `protocolo-80-20` fase 1: 01 y 02 `done`; tickets 03–10 en `ready-for-agent`. Cadena: 03 → 04 → 05 → 06 (replay de la corrida del 10 Sep como exp_21) → 07 → 08 → 09; 10 (`check_data.py`) solo depende de 03.
+- [ ] `protocolo-80-20` fase 1: 01, 02 y 03 `done`; tickets 04–10 en `ready-for-agent`. Cadena: 04 → 04 → 05 → 06 (replay de la corrida del 10 Sep como exp_21) → 07 → 08 → 09; 10 (`check_data.py`) solo depende de 03.
 - [ ] `protocolo-80-20` fase 2: tickets 11–17 en `ready-for-agent`, todos detrás de la fase 1. 11 (capturas flojas del test, 0 h) depende de 08 y va primero; 12 (validación equilibrada por recortes), 13 (punto de inyección de checkpoint, delta 0.00e+00) y 16 (`FINAL_SEEDS`) dependen de 09; 14 (`pretrain.py` SimCLR) de 13; 15 (puerta pareada, ~4,5 h) de 12 y 14; 17 (re-verificar los valores por defecto y entregar el comando de la corrida) de 12, 13, 14 y 16. Cada constante de fase 2 tiene por defecto el comportamiento del 10 Sep.
 
 ### What's Next
 
-1. protocolo-80-20/03 (`load_hypercubes`, normalización train-foreground, `prepare_model_input`, `cnn/engine.py` de fig-aflatoxin). Es el módulo que sustituye entero el `cnn/data_setup.py` actual, así que hay que conservar allí `load_partitions` y los esquemas del ticket 02.
+1. protocolo-80-20/04 (`cnn/model.py`: ResNet50, métricas, semilla por candidato, `ga.py --evaluate R G B`). La normalización del ganador ya está verificada contra la corrida real, así que si el weighted F1 no sale 0,8700979843225085 la divergencia está en el orden de los RNG, los cargadores o las versiones, no en los datos.
 2. Triar `repo-health/02,03,04,06` (probablemente `wontfix`: la feature nueva los deja sin objeto; 06 lo absorbe protocolo-80-20/09).
 3. Seguir la cadena 03 → 09; el replay (06) usa el número 21, la primera corrida real es la 22.
 
@@ -53,10 +53,13 @@
 - `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md` – created by `/setup-matt-pocock-skills`.
 - `.scratch/repo-health/{spec.md,issues/01..06-*.md}` – created from the former `feature_list.json`, which was then deleted.
 - `CLAUDE.md` (Startup, Layout, Working rules, End of session, Agent skills), `init.sh` (final hint) – point at `.scratch/`.
+- protocolo-80-20/03: `cnn/data_setup.py` (reescrito entero: eje espectral, `Hypercube`, `load_hypercubes`, normalización, `prepare_model_input`, `SelectedBandDataset`; conserva partición y esquemas del 02, con `load_cropped_hypercubes` renombrado a `load_manifest`), `cnn/engine.py` (copia literal), `tests/test_protocol.py`, `tests/data/reference_spectral_axes.csv` (nuevo, versionado).
 - protocolo-80-20/02: `split_dataset.py` y `tests/test_protocol.py` (nuevos), `cnn/data_setup.py` (esquemas + `load_partitions`), `pyproject.toml` (`[tool.pytest.ini_options]`), `init.sh` (compila e importa `split_dataset`), `CLAUDE.md` (Layout).
 - protocolo-80-20/01: `pyproject.toml`, `uv.lock`, `.python-version`, `.gitignore`, `config.py` (nuevo), `init.sh`, `CLAUDE.md` (Layout, Invariants, Verification); borrados `cnn/train.py`, `cnn/model_info.py`, `cnn/util/helper_functions.py`, `train_dataset.csv`, `test_dataset.csv`, `run.log`; `tests/data/*.csv` pasan a estar versionados.
 
 ## Evidence of Completion
+
+- [x] **protocolo-80-20/03** (15 Sep): `cnn/engine.py` es byte a byte el de fig-aflatoxin (sin early stopping) y el camino de datos reproduce la normalización de la corrida real: con los 708 recortes de ajuste y las bandas 366/262/225, mean `[0.6560380893489065, 0.6596170752860457, 0.2233070946048868]` y std `[0.11694627746639438, 0.12472051938804612, 0.07551858819936108]`, idénticos a los registrados. 42 tests verdes.
 
 - [x] **protocolo-80-20/02** (15 Sep): `uv run python split_dataset.py` escribe `data/evaluation_partitions.csv` **byte a byte idéntico** a `tests/data/reference_evaluation_partitions.csv` (22 / 6 / 8 capturas, 708 / 160 / 256 recortes). 18 tests en `tests/test_protocol.py`, todos verdes; `init.sh` ya corre pytest.
 
@@ -66,6 +69,8 @@
 
 - `cnn/train.py`, `cnn/model_info.py` y `cnn/util/` ya están borrados (protocolo-80-20/01); su contenido sigue en la historia, en `b7f1fc9`.
 - `create_summary_table.py` only reads experiments 1–10 (repo-health/05).
+- **`check_data.py` ya no importa** tras el ticket 03 (`HypercubeDataset` desapareció) y `ga.py` sigue llamando a los cargadores viejos. Los reescriben los tickets 10 y 05; `init.sh` los compila pero no los importa, así que la puerta sigue verde.
+- **El nm redondeado del ticket 03 era la prosa de la memoria**: los artefactos de la corrida guardan `891.02` y `697.05`. `wavelengths_of` devuelve el valor crudo; redondear, si acaso, al imprimir.
 - **Cabos sueltos que dejan los borrados del ticket 01** (cada uno tiene ya su ticket, no se tocan ahora): `check_data.py:116` sigue teniendo `default="train_dataset.csv"`, que ya no existe → ticket 10 lo reescribe; el README describe `helper_functions.py`, `train_dataset.csv` y `test_dataset.csv` → ticket 09; `cnn/data_setup.py:11` define su propio `NUM_WORKERS = os.cpu_count()`, que compite con `config.NUM_WORKERS = 8` (que sí forma parte del resultado reproducible) → ticket 03 sustituye el módulo entero. `init.sh` compila `check_data.py` y `ga.py` pero no los importa, así que la puerta sigue verde con ellos rotos.
 - **Las tres trampas del spec están resueltas por el ticket 01**: `/data/` en el `.gitignore`, `.venv` con torch 2.13.0+cu126 y python 3.13.5, e `init.sh` sin la comprobación de `train_dataset.csv`/`test_dataset.csv`.
 - `data/` (symlink `cropped_hypercubes` a los 1.124 NPZ, `cropped_hypercubes.csv`, `spectral_axes.csv`) y `out/models/` están en el árbol y siguen ignorados a propósito; `tests/data/*.csv` ya no lo están.

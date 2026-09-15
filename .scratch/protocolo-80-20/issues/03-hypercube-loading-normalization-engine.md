@@ -1,6 +1,6 @@
 # 03 – Hypercube loading, train-only normalization, augmentation and training engine
 
-Status: ready-for-agent
+Status: done
 Blocked by: 02
 
 ## Description
@@ -21,14 +21,63 @@ Tests (synthetic 1×1×5 NPZ in `tmp_path`, no GPU): loader returns no test iden
 
 ## Done when
 
-- [ ] `uv run pytest -q tests/test_protocol.py -k "load or normalization or augmentation"` passes.
-- [ ] `uv run python -c "from cnn.data_setup import load_spectral_axis, wavelengths_of; import config; w = load_spectral_axis(config.SPECTRAL_AXES); print(len(w), wavelengths_of((366, 262, 225), w))"` prints `448 (891.0, 747.5, 697.1)` (rounded as the manifest states them).
-- [ ] `uv run python -c "import cnn.engine; assert not hasattr(cnn.engine, 'EarlyStopping')"` succeeds.
-- [ ] `SKIP_SYNC=1 ./init.sh` is green.
+- [x] `uv run pytest -q tests/test_protocol.py -k "load or normalization or augmentation"` passes.
+- [x] `uv run python -c "from cnn.data_setup import load_spectral_axis, wavelengths_of; import config; w = load_spectral_axis(config.SPECTRAL_AXES); print(len(w), wavelengths_of((366, 262, 225), w))"` prints `448 (891.02, 747.5, 697.05)` — the unrounded values, see the note below about this line.
+- [x] `uv run python -c "import cnn.engine; assert not hasattr(cnn.engine, 'EarlyStopping')"` succeeds.
+- [x] `SKIP_SYNC=1 ./init.sh` is green.
 
 ## Evidence
 
-_(none yet)_
+```
+$ uv run pytest -q tests/test_protocol.py -k "load or normalization or augmentation"
+25 passed, 17 deselected
+$ uv run python -c "... load_spectral_axis(config.SPECTRAL_AXES) ... wavelengths_of((366, 262, 225), w)"
+448 (891.02, 747.5, 697.05)
+$ uv run python -c "import cnn.engine; assert not hasattr(cnn.engine, 'EarlyStopping')"
+$ diff cnn/engine.py ~/Documents/fig-aflatoxin/src/fig_aflatoxin/modeling/engine.py
+                       # empty: the engine is byte-identical to the original
+$ SKIP_SYNC=1 ./init.sh
+... imports OK / four data files present / 42 passed
+=== init OK ===
+```
+
+**The data path was checked against the real run, not only against synthetic
+crops.** Loading the 708 train-fit crops (2 min, ~15 GB of RAM) and fitting the
+normalization for bands 366/262/225 gives, to the last digit, the values ticket
+04 records for the 10 Sep run:
+
+```
+mean [0.6560380893489065, 0.6596170752860457, 0.2233070946048868]
+std  [0.11694627746639438, 0.12472051938804612, 0.07551858819936108]
+```
+
+and `prepare_model_input` on a real crop returns a (3, 64, 128) float32 tensor
+with the background exactly zero and augmentation reproducible from the seed.
+
+**The `(891.0, 747.5, 697.1)` in the done-when line above is the thesis prose,
+not the recorded output.** fig-aflatoxin's own artifacts under `runs/` contain
+`891.02` (28 times) and `697.05` (119 times), and `891.0`/`697.1` zero times;
+`round(697.05, 1)` is `697.0` in Python anyway, so no rounding rule produces the
+line as written. `wavelengths_of` therefore returns the raw axis values, which is
+what fig-aflatoxin's `SelectedBandTriplet.from_indices` does. Round at print
+sites if the thesis wants one decimal.
+
+Notes for the next tickets:
+
+- Ticket 02's `load_cropped_hypercubes` (manifest rows) is now `load_manifest`,
+  because the array loader arriving here is `load_hypercubes` and the two names
+  sat one letter apart. `split_dataset.py` was updated with it.
+- `check_data.py` no longer imports (`HypercubeDataset` is gone) and `ga.py`
+  still calls the old dataloader helpers. Both are rewritten by tickets 10 and
+  05; `init.sh` compiles them but does not import them.
+- `spectral_axis_id(wavelengths)` gives the content address of the axis, so
+  ticket 04 can check that the crops it loaded were cut against the axis whose
+  wavelengths it is reporting, the way fig-aflatoxin's evaluate stage did.
+- `mean`/`std` travel separately from `indices` (the original bundled them in a
+  `NormalizationStatistics`), so nothing stops statistics fitted for one triplet
+  being applied to another. Ticket 04 owns that pairing.
+- `wavelengths_of` keeps the original's `type(index) is not int` check, so GA
+  genes that are `numpy` integers must be cast before they reach it.
 
 ## Comments
 
