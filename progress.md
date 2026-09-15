@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Last Updated:** 2026-09-15 (noche)
+**Last Updated:** 2026-09-15 (noche, 2)
 **Branch:** feature/protocolo-80-20 (creada desde `feature/experiments`@9075d9b, que contiene b7f1fc9)
-**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01 `done`**; ninguno `in-progress`. Next pick: protocolo-80-20/02 – Acquisition-grouped, stratified 80/20 split (`ready-for-agent`, su bloqueo 01 está `done`).
+**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01 y 02 `done`**; ninguno `in-progress`. Next pick: protocolo-80-20/03 – Hypercube loading, train-only normalization, augmentation and training engine (`ready-for-agent`, su bloqueo 02 está `done`).
 
 **No empieces por repo-health/02.** La feature `protocolo-80-20` reescribe `ga.py` entero, así que 02 (restaurar el import de `engine2`), 03 (overrides por entorno) y 04 (tests de los operadores viejos) quedan sin objeto. Están pendientes de triaje por el autor. `repo-health/05` sigue siendo válido e independiente; `06` lo absorbe el README nuevo.
 
@@ -22,12 +22,12 @@
 
 ### What's In Progress
 
-- [ ] `protocolo-80-20` fase 1: 01 `done`; tickets 02–10 en `ready-for-agent`. Cadena: 02 → 03 → 04 → 05 → 06 (replay de la corrida del 10 Sep como exp_21) → 07 → 08 → 09; 10 (`check_data.py`) solo depende de 03.
+- [ ] `protocolo-80-20` fase 1: 01 y 02 `done`; tickets 03–10 en `ready-for-agent`. Cadena: 03 → 04 → 05 → 06 (replay de la corrida del 10 Sep como exp_21) → 07 → 08 → 09; 10 (`check_data.py`) solo depende de 03.
 - [ ] `protocolo-80-20` fase 2: tickets 11–17 en `ready-for-agent`, todos detrás de la fase 1. 11 (capturas flojas del test, 0 h) depende de 08 y va primero; 12 (validación equilibrada por recortes), 13 (punto de inyección de checkpoint, delta 0.00e+00) y 16 (`FINAL_SEEDS`) dependen de 09; 14 (`pretrain.py` SimCLR) de 13; 15 (puerta pareada, ~4,5 h) de 12 y 14; 17 (re-verificar los valores por defecto y entregar el comando de la corrida) de 12, 13, 14 y 16. Cada constante de fase 2 tiene por defecto el comportamiento del 10 Sep.
 
 ### What's Next
 
-1. protocolo-80-20/02 (`split_dataset.py`, `load_partitions`, `tests/test_protocol.py`): tiene que reproducir la partición de referencia (22 / 6 / 8 capturas, 708 / 160 / 256 recortes).
+1. protocolo-80-20/03 (`load_hypercubes`, normalización train-foreground, `prepare_model_input`, `cnn/engine.py` de fig-aflatoxin). Es el módulo que sustituye entero el `cnn/data_setup.py` actual, así que hay que conservar allí `load_partitions` y los esquemas del ticket 02.
 2. Triar `repo-health/02,03,04,06` (probablemente `wontfix`: la feature nueva los deja sin objeto; 06 lo absorbe protocolo-80-20/09).
 3. Seguir la cadena 03 → 09; el replay (06) usa el número 21, la primera corrida real es la 22.
 
@@ -53,9 +53,12 @@
 - `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md` – created by `/setup-matt-pocock-skills`.
 - `.scratch/repo-health/{spec.md,issues/01..06-*.md}` – created from the former `feature_list.json`, which was then deleted.
 - `CLAUDE.md` (Startup, Layout, Working rules, End of session, Agent skills), `init.sh` (final hint) – point at `.scratch/`.
+- protocolo-80-20/02: `split_dataset.py` y `tests/test_protocol.py` (nuevos), `cnn/data_setup.py` (esquemas + `load_partitions`), `pyproject.toml` (`[tool.pytest.ini_options]`), `init.sh` (compila e importa `split_dataset`), `CLAUDE.md` (Layout).
 - protocolo-80-20/01: `pyproject.toml`, `uv.lock`, `.python-version`, `.gitignore`, `config.py` (nuevo), `init.sh`, `CLAUDE.md` (Layout, Invariants, Verification); borrados `cnn/train.py`, `cnn/model_info.py`, `cnn/util/helper_functions.py`, `train_dataset.csv`, `test_dataset.csv`, `run.log`; `tests/data/*.csv` pasan a estar versionados.
 
 ## Evidence of Completion
+
+- [x] **protocolo-80-20/02** (15 Sep): `uv run python split_dataset.py` escribe `data/evaluation_partitions.csv` **byte a byte idéntico** a `tests/data/reference_evaluation_partitions.csv` (22 / 6 / 8 capturas, 708 / 160 / 256 recortes). 18 tests en `tests/test_protocol.py`, todos verdes; `init.sh` ya corre pytest.
 
 - [x] `SKIP_SYNC=1 ./init.sh` verde de principio a fin (2026-09-15, tras protocolo-80-20/01). Avisa (no falla) de que falta `data/evaluation_partitions.csv`, que escribe el ticket 02, y salta pytest porque aún no hay `tests/test_*.py`.
 

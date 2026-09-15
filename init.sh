@@ -20,10 +20,10 @@ fi
 echo "=== syntax check ==="
 # ga.py is compiled but not imported: it still imports the deleted cnn.engine2
 # until protocolo-80-20/05 rewrites it.
-uv run python -m compileall -q config.py ga.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
+uv run python -m compileall -q config.py split_dataset.py ga.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
 
-echo "=== import smoke test (config + cnn package) ==="
-uv run python -c "import config, cnn.engine, cnn.data_setup; print('imports OK')"
+echo "=== import smoke test (config + scripts + cnn package) ==="
+uv run python -c "import config, split_dataset, cnn.engine, cnn.data_setup; print('imports OK')"
 
 echo "=== data files ==="
 uv run python - <<'PY'

@@ -14,13 +14,14 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 ## Layout
 
 - `config.py` – **every constant of the experiment**: paths, class names, device, seeds, partition proportions, GA parameters, CNN hyperparameters, bootstrap. Imported by everything else.
+- `split_dataset.py` – writes `data/evaluation_partitions.csv`: the Acquisition-grouped, class-stratified train/validation/test split.
 - `ga.py <experiment_number>` – the GA search with CNN fitness. Being rewritten by the `protocolo-80-20` feature; broken at import until ticket 05.
 - `cnn/engine.py`, `cnn/data_setup.py` – training loops and the data path (manifest, partition, NPZ, normalization, dataset).
 - `run.sh` – runs a range of experiments sequentially with `nohup`-style logs.
 - `check_data.py`, `create_summary_table.py`, `plot_fitness_evolution.py` – post-hoc utilities.
 - `data/` – gitignored: `cropped_hypercubes/` (symlink to the 1124 NPZ crops), `cropped_hypercubes.csv`, `spectral_axes.csv`, `evaluation_partitions.csv`.
 - `out/tables`, `out/figures`, `out/logs` – experiment results. **Tracked in git and part of the thesis record.**
-- `tests/data/*.csv` – reference manifests (versioned) for the protocol tests. The suite itself arrives with `protocolo-80-20/02`.
+- `tests/test_protocol.py` – the protocol tests (no GPU, no `data/`); `tests/data/*.csv` are the versioned reference manifests they check against.
 - `.scratch/<feature>/` – issue tracker: `spec.md` plus one markdown ticket per `issues/NN-*.md`. Tracked in git.
 
 ## Invariants (do not break)

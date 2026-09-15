@@ -29,3 +29,8 @@ torchvision = { index = "pytorch-cu126" }
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 explicit = true
+
+# The scripts live at the repo root, so tests import them from there.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

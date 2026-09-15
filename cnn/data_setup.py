@@ -1,3 +1,5 @@
+import csv
+
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
@@ -7,6 +9,8 @@ import os
 from typing import Optional
 from torchvision import transforms
 from torch.utils.data import DataLoader
+
+import config
 
 _cpu_count = os.cpu_count()
 NUM_WORKERS = _cpu_count if _cpu_count is not None else 0
@@ -267,3 +271,153 @@ def create_test_dataloader(
         print("Band indices for test dataloader:", band_indices)
 
     return test_dataloader
+
+# --- Evaluation partitions -------------------------------------------------
+# Ported from fig-aflatoxin's partition stage: the manifest schemas and the
+# checks that refuse a manifest in which an Acquisition, or one of its crops,
+# has ended up on both sides of a boundary.
+
+CROPPED_HYPERCUBE_FIELDS = (
+    "schema_version",
+    "cropped_hypercube_id",
+    "crop_id",
+    "acquisition_id",
+    "annotation_id",
+    "severity_class",
+    "height",
+    "width",
+    "band_count",
+    "artifact_relative_path",
+    "artifact_checksum",
+    "spectral_axis_id",
+)
+
+PARTITION_FIELDS = (
+    "schema_version",
+    "cropped_hypercube_id",
+    "crop_id",
+    "acquisition_id",
+    "severity_class",
+    "partition",
+    "selection_partition",
+)
+
+
+def read_manifest(path, fields: tuple[str, ...], *, name: str) -> list[dict[str, str]]:
+    """Read a manifest CSV, refusing an unexpected schema or an empty file."""
+    try:
+        with open(path, newline="") as source:
+            reader = csv.DictReader(source)
+            if tuple(reader.fieldnames or ()) != fields:
+                raise ValueError(f"{name} has an incompatible schema")
+            rows = list(reader)
+    except OSError as exc:
+        raise ValueError(f"cannot read {name} '{path}': {exc}") from exc
+    if not rows:
+        raise ValueError(f"{name} is empty")
+    if any(row["schema_version"] != "1" for row in rows):
+        raise ValueError(f"{name} has an unsupported schema version")
+    return rows
+
+
+def load_cropped_hypercubes(path) -> list[dict[str, str]]:
+    """Load the CroppedHypercube manifest, checking identities and classes.
+
+    Checksums are deliberately not verified on load; verifying the 1124 NPZ
+    files once is `check_data.py`'s job, which ticket 10 gives it.
+    """
+    rows = read_manifest(path, CROPPED_HYPERCUBE_FIELDS, name="CroppedHypercube manifest")
+    hypercube_ids = set()
+    crop_ids = set()
+    acquisition_classes = {}
+    for row in rows:
+        identity = row["cropped_hypercube_id"]
+        crop_id = row["crop_id"]
+        acquisition_id = row["acquisition_id"]
+        if row["severity_class"] not in config.CLASS_NAMES:
+            raise ValueError(f"invalid SeverityClass '{row['severity_class']}'")
+        if not identity or identity in hypercube_ids:
+            raise ValueError(f"duplicate or missing CroppedHypercube identity '{identity}'")
+        if not crop_id or crop_id in crop_ids:
+            raise ValueError(f"duplicate or missing crop identity '{crop_id}'")
+        if not acquisition_id:
+            raise ValueError("missing Acquisition identity")
+        prior_class = acquisition_classes.setdefault(acquisition_id, row["severity_class"])
+        if prior_class != row["severity_class"]:
+            raise ValueError(f"conflicting SeverityClass for Acquisition '{acquisition_id}'")
+        hypercube_ids.add(identity)
+        crop_ids.add(crop_id)
+    return rows
+
+
+def validate_partition_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Refuse partition rows that leak across a boundary or lack a group.
+
+    Raises:
+        ValueError: If an Acquisition or one of its crops appears on both sides
+            of the train/test or train/validation boundary, if a test record
+            carries a selection partition, or if any of the three groups is
+            missing.
+    """
+    hypercube_assignments = {}
+    crop_assignments = {}
+    acquisition_assignments = {}
+    acquisition_classes = {}
+    seen_hypercubes = set()
+    seen_crops = set()
+    assignments_seen = set()
+    for row in rows:
+        if row["severity_class"] not in config.CLASS_NAMES:
+            raise ValueError(f"invalid SeverityClass '{row['severity_class']}'")
+        partition = row["partition"]
+        selection = row["selection_partition"]
+        if partition == "test":
+            if selection:
+                raise ValueError("held-out test records cannot have a selection partition")
+        elif partition == "train":
+            if selection not in {"train", "validation"}:
+                raise ValueError(
+                    "train records require a 'train' or 'validation' selection partition"
+                )
+        else:
+            raise ValueError(f"invalid evaluation partition '{partition}'")
+        assignment = (partition, selection)
+        assignments_seen.add(assignment)
+
+        unique_identities = (
+            (hypercube_assignments, seen_hypercubes, row["cropped_hypercube_id"], "CroppedHypercube"),
+            (crop_assignments, seen_crops, row["crop_id"], "crop"),
+        )
+        for assignments, seen, identity, name in unique_identities:
+            if not identity:
+                raise ValueError(f"missing {name} identity")
+            prior = assignments.get(identity)
+            if prior is not None and prior != assignment:
+                raise ValueError(f"{name} '{identity}' crosses evaluation boundaries")
+            if identity in seen:
+                raise ValueError(f"duplicate {name} identity '{identity}'")
+            assignments[identity] = assignment
+            seen.add(identity)
+        acquisition_id = row["acquisition_id"]
+        if not acquisition_id:
+            raise ValueError("missing Acquisition identity")
+        prior_assignment = acquisition_assignments.setdefault(acquisition_id, assignment)
+        if prior_assignment != assignment:
+            raise ValueError(f"Acquisition '{acquisition_id}' crosses evaluation boundaries")
+        prior_class = acquisition_classes.setdefault(acquisition_id, row["severity_class"])
+        if prior_class != row["severity_class"]:
+            raise ValueError(f"conflicting SeverityClass for Acquisition '{acquisition_id}'")
+    for assignment, name in (
+        (("train", "train"), "train records for band selection"),
+        (("train", "validation"), "validation records for band selection"),
+        (("test", ""), "held-out test records"),
+    ):
+        if assignment not in assignments_seen:
+            raise ValueError(f"evaluation assignment has no {name}")
+    return rows
+
+
+def load_partitions(path) -> list[dict[str, str]]:
+    """Load the evaluation-partition manifest, refusing any leak."""
+    rows = read_manifest(path, PARTITION_FIELDS, name="evaluation partition manifest")
+    return validate_partition_rows(rows)
