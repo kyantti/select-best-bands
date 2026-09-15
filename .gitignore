@@ -1,5 +1,8 @@
-# Dataset - Exclude hyperspectral data
-data/
+# Dataset - Exclude hyperspectral data (leading slash: tests/data/ stays versioned)
+/data/
+
+# Trained model weights (hundreds of MB each)
+out/models/
 
 # Python cache files
 __pycache__/
@@ -32,9 +35,6 @@ ENV/
 # Temporary files
 .DS_Store
 Thumbs.db
-
-# Python version file (if using pyenv)
-.python-version
 
 # Coverage reports
 htmlcov/

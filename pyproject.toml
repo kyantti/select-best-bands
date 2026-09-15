@@ -1,21 +1,31 @@
 [project]
 name = "select-best-bands"
 version = "0.1.0"
-description = "Add your description here"
+description = "Genetic selection of the best band triplet for aflatoxin classification in figs (80/20 protocol)"
 readme = "README.md"
 requires-python = ">=3.13"
+# Pinned to the exact versions that produced the 10 Sep 2026 result. Changing any
+# of them invalidates the bit-for-bit verification of the port.
 dependencies = [
-    "deap>=1.4.3",
-    "matplotlib>=3.10.3",
-    "numpy>=2.3.1",
-    "pandas>=2.3.2",
-    "pillow>=10.0.0",
-    "requests>=2.32.0",
-    "scikit-learn>=1.7.1",
-    "seaborn>=0.13.2",
-    "torch>=2.7.1",
-    "torcheval>=0.0.7",
-    "torchinfo>=1.8.0",
-    "torchvision>=0.22.1",
-    "tqdm>=4.67.1",
+    "deap==1.4.4",
+    "matplotlib==3.11.1",
+    "numpy==2.5.1",
+    "pandas==2.3.3",
+    "scikit-learn==1.9.0",
+    "seaborn==0.13.2",
+    "torch==2.13.0",
+    "torchvision==0.28.0",
 ]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+# torch/torchvision come from the CUDA 12.6 wheel index, never from PyPI.
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

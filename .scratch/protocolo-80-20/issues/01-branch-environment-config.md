@@ -1,6 +1,6 @@
 # 01 – Branch, pinned environment and `config.py`
 
-Status: ready-for-agent
+Status: done
 Blocked by: none
 
 ## Description
@@ -19,17 +19,51 @@ Scope:
 
 ## Done when
 
-- [ ] `git branch --show-current` prints `feature/protocolo-80-20` and `git merge-base --is-ancestor b7f1fc9 HEAD` succeeds.
-- [ ] `uv run python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"` prints `2.13.0+cu126 0.28.0+cu126 True`.
-- [ ] `uv run python -c "import deap, numpy, sklearn, pandas; print(deap.__version__, numpy.__version__, sklearn.__version__, pandas.__version__)"` prints `1.4.4 2.5.1 1.9.0 2.3.3`.
-- [ ] `git check-ignore -q tests/data/reference_evaluation_partitions.csv` fails (file is not ignored) and `git check-ignore -q data/cropped_hypercubes.csv out/models/x.pt` succeeds.
-- [ ] `uv run python -c "import config; print(config.STUDY_SEED, config.CANDIDATE_SEED, config.FINAL_SEED, config.PARTITION_SEED)"` prints `23 1729 2718 20230717`.
-- [ ] `SKIP_SYNC=1 ./init.sh` is green.
-- [ ] `ls cnn/train.py cnn/model_info.py cnn/util train_dataset.csv test_dataset.csv run.log` reports every path missing.
+- [x] `git branch --show-current` prints `feature/protocolo-80-20` and `git merge-base --is-ancestor b7f1fc9 HEAD` succeeds.
+- [x] `uv run python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"` prints `2.13.0+cu126 0.28.0+cu126 True`.
+- [x] `uv run python -c "import deap, numpy, sklearn, pandas; print(deap.__version__, numpy.__version__, sklearn.__version__, pandas.__version__)"` prints `1.4.4 2.5.1 1.9.0 2.3.3`.
+- [x] `git check-ignore -q tests/data/reference_evaluation_partitions.csv` fails (file is not ignored) and `git check-ignore -q data/cropped_hypercubes.csv out/models/x.pt` succeeds.
+- [x] `uv run python -c "import config; print(config.STUDY_SEED, config.CANDIDATE_SEED, config.FINAL_SEED, config.PARTITION_SEED)"` prints `23 1729 2718 20230717`.
+- [x] `SKIP_SYNC=1 ./init.sh` is green.
+- [x] `ls cnn/train.py cnn/model_info.py cnn/util train_dataset.csv test_dataset.csv run.log` reports every path missing.
 
 ## Evidence
 
-_(none yet)_
+All checks run on 15 Sep 2026 on the A100 box, after `uv lock && uv sync`
+(the venv went from python 3.13.2 / torch 2.7.1 to python 3.13.5 / torch 2.13.0+cu126).
+
+```
+$ git branch --show-current
+feature/protocolo-80-20
+$ git merge-base --is-ancestor b7f1fc9 HEAD && echo OK
+OK
+$ uv run python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"
+2.13.0+cu126 0.28.0+cu126 True
+$ uv run python -c "from importlib.metadata import version; print(version('deap'), version('numpy'), version('scikit-learn'), version('pandas'), version('matplotlib'), version('seaborn'), version('pytest'))"
+1.4.4 2.5.1 1.9.0 2.3.3 3.11.1 0.13.2 9.1.1
+$ uv run python --version
+Python 3.13.5
+$ git check-ignore -q tests/data/reference_evaluation_partitions.csv; echo $?
+1                      # not ignored
+$ git check-ignore -q data/cropped_hypercubes.csv; echo $?
+0
+$ git check-ignore -q out/models/x.pt; echo $?
+0
+$ uv run python -c "import config; print(config.STUDY_SEED, config.CANDIDATE_SEED, config.FINAL_SEED, config.PARTITION_SEED)"
+23 1729 2718 20230717
+$ ls cnn/train.py cnn/model_info.py cnn/util train_dataset.csv test_dataset.csv run.log
+ls: cannot access any of them: No such file or directory
+$ SKIP_SYNC=1 ./init.sh
+... imports OK / data files (PARTITIONS missing, warns) / torch 2.13.0+cu126, cuda available: True, 4 devices
+=== init OK ===
+```
+
+Notes for the next ticket:
+
+- `deap.__version__` is the upstream short string `1.4`; the installed distribution is 1.4.4 (`importlib.metadata.version`). The done-when line was checked that way.
+- `init.sh` warns separately for a missing `data/evaluation_partitions.csv` (normal until ticket 02 writes it) and for an absent dataset.
+- `import ga` is deliberately out of `init.sh` (`ga.py` still imports `cnn.engine2`); ticket 05 puts it back.
+- `tests/data/*.csv` are now versioned but there is still no `tests/test_*.py`, so `init.sh` skips the pytest step.
 
 ## Comments
 

@@ -13,30 +13,30 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 
 ## Layout
 
-- `ga.py <experiment_number>` – the whole pipeline: GA loop + CNN fitness. Single entry point.
-- `cnn/engine.py`, `cnn/data_setup.py`, `cnn/util/helper_functions.py` – training loop, dataset, plots. Imported by `ga.py`.
-- `cnn/train.py`, `cnn/model_info.py` – standalone scripts run from inside `cnn/` (bare imports). Not used by the GA.
+- `config.py` – **every constant of the experiment**: paths, class names, device, seeds, partition proportions, GA parameters, CNN hyperparameters, bootstrap. Imported by everything else.
+- `ga.py <experiment_number>` – the GA search with CNN fitness. Being rewritten by the `protocolo-80-20` feature; broken at import until ticket 05.
+- `cnn/engine.py`, `cnn/data_setup.py` – training loops and the data path (manifest, partition, NPZ, normalization, dataset).
 - `run.sh` – runs a range of experiments sequentially with `nohup`-style logs.
 - `check_data.py`, `create_summary_table.py`, `plot_fitness_evolution.py` – post-hoc utilities.
-- `train_dataset.csv`, `test_dataset.csv` – manifests (`filepath,label`) pointing into `data/processed/` (gitignored, ~GBs of `.npy`).
+- `data/` – gitignored: `cropped_hypercubes/` (symlink to the 1124 NPZ crops), `cropped_hypercubes.csv`, `spectral_axes.csv`, `evaluation_partitions.csv`.
 - `out/tables`, `out/figures`, `out/logs` – experiment results. **Tracked in git and part of the thesis record.**
-- `tests/data/*.csv` – reference manifests only. There is no automated test suite yet.
+- `tests/data/*.csv` – reference manifests (versioned) for the protocol tests. The suite itself arrives with `protocolo-80-20/02`.
 - `.scratch/<feature>/` – issue tracker: `spec.md` plus one markdown ticket per `issues/NN-*.md`. Tracked in git.
 
 ## Invariants (do not break)
 
 - **Never overwrite or delete existing `out/` results.** Each experiment number `NN` owns `out/tables/exp_NN_*` and `out/figures/exp_NN_*`. New runs use a new number.
 - **Never commit `data/`.** It is gitignored on purpose.
-- **Full runs are hours on an A100.** Do not start `ga.py` with default `GENERATIONS`/`POPULATION_SIZE`/`NUM_EPOCHS` unless the user asked for a real experiment. Use a smoke configuration (see `.scratch/repo-health/issues/03-smoke-run-config.md`) to verify code paths.
-- **Do not change the GA or CNN hyperparameters** at the top of `ga.py` unless that is the feature. Past results depend on them.
+- **Full runs are hours on an A100.** Do not start `ga.py` with the default `GENERATIONS`/`POPULATION_SIZE`/`NUM_EPOCHS` of `config.py` unless the user asked for a real experiment. Use a smoke configuration (see `.scratch/repo-health/issues/03-smoke-run-config.md`) to verify code paths.
+- **Do not change the GA or CNN hyperparameters** in `config.py` unless that is the feature. Past results depend on them.
 - Use `uv run ...` for every Python invocation. Never `pip install` into `.venv`.
 
 ## Verification and Definition of Done
 
 ```bash
-./init.sh                      # sync deps, compile, import ga.py, check manifests
-uv run python -c "import ga"   # fastest single check: catches broken imports
-SKIP_SYNC=1 ./init.sh          # when deps are already installed
+./init.sh                        # sync deps, compile, import config + cnn, check data files
+uv run python -c "import config" # fastest single check: catches broken imports
+SKIP_SYNC=1 ./init.sh            # when deps are already installed
 ```
 
 A change to `ga.py` or `cnn/` is not done until `./init.sh` is green. A change that

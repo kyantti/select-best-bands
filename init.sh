@@ -1,6 +1,6 @@
 #!/bin/bash
 # Standard startup + verification for select-best-bands.
-# Usage: ./init.sh            (full: sync deps, compile, import, check manifests)
+# Usage: ./init.sh            (full: sync deps, compile, import, check data files)
 #        SKIP_SYNC=1 ./init.sh (skip `uv sync` when deps are already installed)
 set -e
 cd "$(dirname "$0")"
@@ -18,32 +18,37 @@ if [ "${SKIP_SYNC:-0}" != "1" ]; then
 fi
 
 echo "=== syntax check ==="
-uv run python -m compileall -q ga.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
+# ga.py is compiled but not imported: it still imports the deleted cnn.engine2
+# until protocolo-80-20/05 rewrites it.
+uv run python -m compileall -q config.py ga.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
 
-echo "=== import smoke test (ga.py + cnn package) ==="
-uv run python -c "import ga, cnn.engine, cnn.data_setup, cnn.util.helper_functions; print('imports OK')"
+echo "=== import smoke test (config + cnn package) ==="
+uv run python -c "import config, cnn.engine, cnn.data_setup; print('imports OK')"
 
-echo "=== dataset manifests ==="
+echo "=== data files ==="
 uv run python - <<'PY'
-import csv, os, sys
-bad = 0
-for name in ("train_dataset.csv", "test_dataset.csv"):
-    rows = list(csv.DictReader(open(name)))
-    missing = [r["filepath"] for r in rows if not os.path.exists(r["filepath"])]
-    labels = {r["label"] for r in rows}
-    ok_labels = labels <= {"0", "1", "2", "3"}
-    print(f"{name}: {len(rows)} rows, {len(missing)} missing files, labels={sorted(labels)}")
-    if not ok_labels:
-        print(f"FAIL: unexpected labels in {name}: {sorted(labels - {'0','1','2','3'})}")
-        bad = 1
-    if missing:
-        print(f"WARN: data/ not present for {name} (gitignored). Code work is fine; ga.py cannot run here.")
-if bad:
-    sys.exit(1)
+import config
+
+expected = [
+    ("dataset", config.HYPERCUBES_DIR),
+    ("dataset", config.HYPERCUBES_MANIFEST),
+    ("dataset", config.SPECTRAL_AXES),
+    ("partition", config.PARTITIONS),
+]
+missing = set()
+for kind, path in expected:
+    print(f"{'ok  ' if path.exists() else 'MISS'} {path}")
+    if not path.exists():
+        missing.add(kind)
+if "dataset" in missing:
+    print("WARN: data/ is gitignored and incomplete here. Code work is fine, but no")
+    print("      step that reads hypercubes can run on this machine.")
+if "partition" in missing:
+    print("WARN: no partition manifest yet. `split_dataset.py` writes it (ticket 02).")
 PY
 
 echo "=== GPU ==="
-uv run python -c "import torch; print('cuda available:', torch.cuda.is_available(), '| devices:', torch.cuda.device_count())"
+uv run python -c "import torch; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available(), '| devices:', torch.cuda.device_count())"
 
 if [ -d tests ] && ls tests/test_*.py >/dev/null 2>&1; then
   echo "=== pytest ==="
