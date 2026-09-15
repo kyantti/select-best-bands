@@ -7,7 +7,7 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 ## Startup Workflow (every session)
 
 1. `pwd` must be the repo root (`select-best-bands`).
-2. Read this file, then `feature_list.json`, then `progress.md`.
+2. Read this file, then `progress.md`, then the open tickets in `.scratch/*/issues/`.
 3. Run `./init.sh`. If it is red, fixing that is the first task.
 4. `git log --oneline -5` and `git status` before editing.
 
@@ -21,12 +21,13 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 - `train_dataset.csv`, `test_dataset.csv` – manifests (`filepath,label`) pointing into `data/processed/` (gitignored, ~GBs of `.npy`).
 - `out/tables`, `out/figures`, `out/logs` – experiment results. **Tracked in git and part of the thesis record.**
 - `tests/data/*.csv` – reference manifests only. There is no automated test suite yet.
+- `.scratch/<feature>/` – issue tracker: `spec.md` plus one markdown ticket per `issues/NN-*.md`. Tracked in git.
 
 ## Invariants (do not break)
 
 - **Never overwrite or delete existing `out/` results.** Each experiment number `NN` owns `out/tables/exp_NN_*` and `out/figures/exp_NN_*`. New runs use a new number.
 - **Never commit `data/`.** It is gitignored on purpose.
-- **Full runs are hours on an A100.** Do not start `ga.py` with default `GENERATIONS`/`POPULATION_SIZE`/`NUM_EPOCHS` unless the user asked for a real experiment. Use a smoke configuration (see feat-003) to verify code paths.
+- **Full runs are hours on an A100.** Do not start `ga.py` with default `GENERATIONS`/`POPULATION_SIZE`/`NUM_EPOCHS` unless the user asked for a real experiment. Use a smoke configuration (see `.scratch/repo-health/issues/03-smoke-run-config.md`) to verify code paths.
 - **Do not change the GA or CNN hyperparameters** at the top of `ga.py` unless that is the feature. Past results depend on them.
 - Use `uv run ...` for every Python invocation. Never `pip install` into `.venv`.
 
@@ -45,27 +46,27 @@ throwaway experiment number (use 90–99 and delete the outputs afterwards).
 
 ## Working rules
 
-- **One feature at a time.** Pick a `ready-for-agent` feature from `feature_list.json` whose `dependencies` are all `done`, set it `in-progress`, and name it in `progress.md`. Never work on `needs-triage`, `needs-info` or `ready-for-human` items.
+- **One feature at a time.** Pick one `Status: ready-for-agent` ticket in `.scratch/*/issues/` whose `Blocked by:` tickets are all `done`, set it `in-progress`, and name it in `progress.md`. Never work on `needs-triage`, `needs-info` or `ready-for-human` items.
 - Do not widen scope: no refactors, renames, or "cleanups" outside the active feature.
-- Record evidence (command + result) in `feature_list.json` when marking `done`. If you need the author's decision, set the feature to `needs-info` with the question in `evidence` and stop.
+- Record evidence (command + result) under the ticket's `## Evidence` when marking `done`. If you need the author's decision, set the ticket to `needs-info` with the question under `## Comments` and stop.
 - Status vocabulary and transitions: `docs/agents/triage-labels.md`.
 - Long-running experiments: launch through `run.sh` or `nohup`, log to `out/logs/`, and record the PID and expected finish in `progress.md`.
 
 ## End of session
 
 1. Update `progress.md` (state, blockers, next step).
-2. Update `feature_list.json` statuses and evidence.
+2. Update the ticket's `Status:` and `## Evidence` in `.scratch/`.
 3. Leave `./init.sh` green. Commit only when asked.
 
 ## Agent skills
 
 ### Issue tracker
 
-Work is tracked as entries in `feature_list.json` at the repo root; there is no external tracker. See `docs/agents/issue-tracker.md`.
+Local markdown: one ticket per file under `.scratch/<feature>/issues/`, tracked in git; there is no external tracker. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-The five default roles plus `in-progress` and `done`, all as values of each feature's `status` field. One status per feature. See `docs/agents/triage-labels.md`.
+The five default roles plus `in-progress` and `done`, as the `Status:` line of each ticket. One status per ticket. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

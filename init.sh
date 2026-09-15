@@ -52,4 +52,4 @@ fi
 
 echo ""
 echo "=== init OK ==="
-echo "Next: read feature_list.json, pick ONE ready-for-agent feature whose dependencies are done, set it in-progress, work only on it."
+echo "Next: read .scratch/*/issues/, pick ONE ready-for-agent ticket whose blockers are done, set it in-progress, work only on it."

@@ -1,55 +1,38 @@
-# Issue tracker: `feature_list.json`
+# Issue tracker: Local Markdown
 
-Issues and specs for this repo live as entries in `feature_list.json` at the repo root. There is no external tracker: this file is the single source of truth for what work exists, what it depends on, and whether it is done. `CLAUDE.md` requires reading it at session start and updating it at session end.
-
-## Schema
-
-```json
-{
-  "features": [
-    {
-      "id": "feat-007",
-      "name": "Short imperative title",
-      "description": "What to change and the concrete Done condition (command + expected output).",
-      "dependencies": ["feat-002"],
-      "status": "ready-for-agent",
-      "evidence": ""
-    }
-  ]
-}
-```
-
-- `id`: `feat-NNN`, zero-padded, next free number. Never reuse or renumber.
-- `dependencies`: ids that must be `done` first. A feature is blocked while any of them is not `done`.
-- `status`: one of the values in `docs/agents/triage-labels.md`. Exactly one per feature.
-- `evidence`: dated lines (`YYYY-MM-DD: ...`). Required when marking `done` (command + observed result) or `wontfix` (reason). Also holds open questions while `needs-info`.
+Issues and specs for this repo live as markdown files in `.scratch/`. It is tracked in git and is the single source of truth for what work exists, what blocks it, and whether it is done. `CLAUDE.md` requires reading it at session start and updating it at session end.
 
 ## Conventions
 
-- **Create an issue**: append a new object to `features` with `status: "needs-triage"` and empty `evidence`. If the author writes it with a Done condition, it may start as `ready-for-agent`. Edit with `uv run python` and the `json` module (`indent=2`) so the file stays valid; do not hand-edit with `sed`.
-- **Read an issue**: load the file and select by `id`. Read `dependencies` and each dependency's `status` too.
-- **List issues**: iterate `features`, filter by `status`. Show `id`, `name`, `status`, `dependencies`.
-- **Comment on an issue**: append a dated line to `evidence`. There is no separate comments field.
-- **Apply / remove labels**: set `status`. Applying a label replaces the previous one.
-- **Close**: set `status` to `done` (with evidence) or `wontfix` (with a reason in `evidence`).
+- One feature per directory: `.scratch/<feature-slug>/`
+- The spec is `.scratch/<feature-slug>/spec.md`
+- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
+- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
+- Blocking is a `Blocked by: NN, NN` line right under `Status:` (`none` when unblocked). A ticket is workable when every listed ticket is `done`
+- Each issue has `## Description`, `## Done when` (the concrete check: command + expected output), `## Evidence` (dated lines, filled when closing) and `## Comments`
+- Comments and conversation history append to the bottom of the file under the `## Comments` heading
 
-Keep entries small enough to finish in one session. Split anything larger into several features linked by `dependencies`.
+Refer to a ticket as `<feature-slug>/<NN>` (e.g. `repo-health/02`). Never renumber or reuse a number; closed tickets stay in place.
+
+Current feature directories:
+
+- `repo-health/`: make the repo runnable and restartable for agents (tickets 01–06).
 
 ## When a skill says "publish to the issue tracker"
 
-Append a feature entry as above and report the new `id`.
+Create a new file under `.scratch/<feature-slug>/issues/` (creating the directory and `spec.md` if needed) with `Status: needs-triage`, or `Status: ready-for-agent` when the author writes it with a Done-when section.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the entry with that `id` from `feature_list.json`, plus the entries it depends on.
+Read the file at the referenced path, plus every ticket its `Blocked by:` line names. The user will normally pass the path or the issue number directly.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is one feature entry; child tickets are further entries that depend on it.
+Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
-- **Map**: a feature entry whose `name` starts with `[map]`. Its `description` holds Notes / Decisions-so-far / Fog.
-- **Child ticket**: a feature entry with the map's `id` in `dependencies`. Prefix `name` with `[research]`, `[prototype]`, `[grilling]`, or `[task]` for the type.
-- **Blocking**: `dependencies`. A ticket is unblocked when every id in `dependencies` (other than the map) has `status: "done"`.
-- **Frontier query**: children of the map that are `ready-for-agent` with no open blocker, in file order.
-- **Claim**: set the ticket's `status` to `in-progress`. Record it in `progress.md` as the active feature.
-- **Resolve**: set `status: "done"`, write the answer into `evidence`, and append a one-line pointer to the map's `description` under Decisions-so-far.
+- **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
+- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
+- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
+- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
+- **Claim**: set `Status: claimed` and save before any work.
+- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
