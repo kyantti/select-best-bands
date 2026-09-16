@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from sklearn.model_selection import train_test_split
 
 import analyze_test_errors
 import bootstrap
@@ -38,7 +39,7 @@ from cnn.data_setup import (
     wavelengths_of,
 )
 from cnn.model import candidate_seed, classification_metrics, data_identity
-from split_dataset import assign_partitions
+from split_dataset import assign_partitions, held_out_size, measure_balance, summarize
 
 BANDS = 5
 
@@ -48,12 +49,19 @@ REFERENCE_SPECTRAL_AXES = config.ROOT / "tests" / "data" / "reference_spectral_a
 
 
 def synthetic_manifest(class_counts=(6, 6, 6, 6), crops_per_acquisition=3):
-    """A CroppedHypercube manifest of `sum(class_counts)` acquisitions."""
+    """A CroppedHypercube manifest of `sum(class_counts)` acquisitions.
+
+    `crops_per_acquisition` is one number for every class, or one per class.
+    """
+    if isinstance(crops_per_acquisition, int):
+        crops_per_acquisition = (crops_per_acquisition,) * len(config.CLASS_NAMES)
     rows = []
-    for severity, count in zip(config.CLASS_NAMES, class_counts, strict=True):
+    for severity, count, crops in zip(
+        config.CLASS_NAMES, class_counts, crops_per_acquisition, strict=True
+    ):
         for acquisition in range(count):
             acquisition_id = f"acq-{severity}-{acquisition:02d}"
-            for crop in range(crops_per_acquisition):
+            for crop in range(crops):
                 rows.append(
                     {
                         "schema_version": "1",
@@ -75,6 +83,10 @@ def split(source_rows, **overrides):
         "validation_proportion": config.VALIDATION_PROPORTION,
     } | overrides
     return assign_partitions(source_rows, **settings)
+
+
+def validation_acquisitions(rows):
+    return {row["acquisition_id"] for row in rows if row["selection_partition"] == "validation"}
 
 
 def assignments_by_acquisition(rows):
@@ -160,6 +172,141 @@ def test_split_fails_rather_than_silently_dropping_a_class_from_one_side():
         ValueError, match="at least one Acquisition per SeverityClass on each side"
     ):
         split(source, test_proportion=0.05)
+
+
+# --- The crop-count-balanced validation boundary (VALIDATION_BALANCE) -------
+#
+# Stratifying by acquisition left validation with 52 C0 and 60 C2 crops against
+# 24 C1 and 24 C3: a max/min ratio of 2.5, on the partition the weighted-F1
+# fitness is computed over.  These watch the second policy, and that asking for
+# nothing still gives the 10 Sep boundary.
+
+
+def test_balance_of_the_reference_partition_is_the_ratio_the_ticket_quotes():
+    """2.5 is the number the balanced policy has to improve on."""
+    achieved = measure_balance(reference_partition_rows())
+
+    assert achieved.crops_per_class == {"C0": 52, "C1": 24, "C2": 60, "C3": 24}
+    assert achieved.ratio == 2.5
+
+
+def test_balance_by_crop_count_reaches_the_target_on_the_real_manifest():
+    rows = split(load_manifest(REFERENCE_MANIFEST), balance="crop_count_balanced")
+
+    achieved = measure_balance(rows)
+    assert achieved.ratio <= config.VALIDATION_BALANCE_TARGET_RATIO
+    # The best admissible subset of the 28 train acquisitions, enumerated
+    # independently: 48 / 48 / 40 / 40 crops, a ratio of 1.2.
+    assert achieved.crops_per_class == {"C0": 48, "C1": 48, "C2": 40, "C3": 40}
+    assert achieved.ratio == 1.2
+
+
+def test_balance_by_crop_count_leaves_the_train_test_boundary_alone():
+    """Only the boundary inside train moves: the test set stays the 10 Sep one."""
+    expected = reference_partition_rows()
+
+    rows = split(load_manifest(REFERENCE_MANIFEST), balance="crop_count_balanced")
+
+    assert [row["partition"] for row in rows] == [row["partition"] for row in expected]
+    assert validation_acquisitions(rows) != validation_acquisitions(expected)
+
+
+def test_balance_default_is_the_10_sep_boundary():
+    """The phase-1 verification survives phase 2 only while this holds."""
+    assert config.VALIDATION_BALANCE == "acquisition_stratified"
+    with REFERENCE_PARTITIONS.open(newline="") as source:
+        expected = list(csv.DictReader(source))
+
+    assert split(load_manifest(REFERENCE_MANIFEST), balance=config.VALIDATION_BALANCE) == expected
+
+
+def test_balance_by_crop_count_is_deterministic():
+    source = load_manifest(REFERENCE_MANIFEST)
+
+    once = split(source, balance="crop_count_balanced")
+
+    assert split(source, balance="crop_count_balanced") == once
+
+
+def test_balance_refuses_a_policy_it_does_not_have():
+    with pytest.raises(ValueError, match="unknown validation balance 'crop_balanced'"):
+        split(load_manifest(REFERENCE_MANIFEST), balance="crop_balanced")
+
+
+def test_balance_holds_out_as_many_acquisitions_as_the_default_policy():
+    """The two policies differ in which captures validate, never in how many."""
+    expected = split(load_manifest(REFERENCE_MANIFEST))
+
+    rows = split(load_manifest(REFERENCE_MANIFEST), balance="crop_count_balanced")
+
+    assert len(validation_acquisitions(rows)) == len(validation_acquisitions(expected)) == 6
+
+
+@pytest.mark.parametrize("total", [12, 16, 20, 25, 28, 31])
+def test_balance_holds_out_what_scikit_learn_would_hold_out(total):
+    """`held_out_size` restates scikit-learn's count; this fails if either moves."""
+    identities = [f"acq-{index:02d}" for index in range(total)]
+
+    _, held = train_test_split(identities, test_size=config.VALIDATION_PROPORTION, random_state=0)
+
+    assert held_out_size(total, config.VALIDATION_PROPORTION) == len(held)
+
+
+def test_balance_publishes_the_best_subset_when_none_reaches_the_target():
+    """C0 carries ten crops per acquisition against one for the other classes,
+    so no admissible validation subset can come near the target ratio."""
+    source = synthetic_manifest(class_counts=(5, 5, 5, 5), crops_per_acquisition=(10, 1, 1, 1))
+
+    rows = split(source, balance="crop_count_balanced")
+
+    achieved = measure_balance(rows)
+    assert not achieved.reaches_target
+    assert achieved.ratio == 10.0
+    # And nothing was relaxed to publish it.
+    for acquisition_id, assignments in assignments_by_acquisition(rows).items():
+        assert len(assignments) == 1, f"{acquisition_id} crosses a boundary"
+    for group in (("train", "train"), ("train", "validation"), ("test", "")):
+        present = {
+            row["severity_class"]
+            for row in rows
+            if (row["partition"], row["selection_partition"]) == group
+        }
+        assert present == set(config.CLASS_NAMES), f"{group} is missing a class"
+
+
+def test_balance_fails_rather_than_dropping_a_class_from_one_side():
+    """One validation acquisition cannot leave one of each of the four classes."""
+    source = synthetic_manifest(class_counts=(5, 5, 5, 5))
+
+    with pytest.raises(
+        ValueError, match="at least one Acquisition per SeverityClass on each side"
+    ):
+        split(source, balance="crop_count_balanced", validation_proportion=0.05)
+
+
+def test_balance_summary_quotes_the_policy_and_the_ratio_it_reached(capsys):
+    rows = split(load_manifest(REFERENCE_MANIFEST), balance="crop_count_balanced")
+
+    summarize(rows, balance="crop_count_balanced")
+
+    printed = capsys.readouterr().out
+    assert "validation    6 acquisitions   176 crops  C0=48 C1=48 C2=40 C3=40" in printed
+    assert "crop_count_balanced: max/min crops per class 1.20 (target 1.50, reached)" in printed
+
+
+def test_balance_summary_says_so_when_the_target_was_not_reached(capsys):
+    source = synthetic_manifest(class_counts=(5, 5, 5, 5), crops_per_acquisition=(10, 1, 1, 1))
+
+    summarize(split(source, balance="crop_count_balanced"), balance="crop_count_balanced")
+
+    assert "10.00 (target 1.50, not reached)" in capsys.readouterr().out
+
+
+def test_balance_summary_quotes_the_2_5_of_the_default_policy(capsys):
+    """The number the report compares the improvement against."""
+    summarize(reference_partition_rows(), balance="acquisition_stratified")
+
+    assert "acquisition_stratified: max/min crops per class 2.50" in capsys.readouterr().out
 
 
 def reference_partition_rows():

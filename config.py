@@ -38,6 +38,19 @@ PARTITION_SEED = 20230717
 TEST_PROPORTION = 0.2
 VALIDATION_PROPORTION = 0.2
 
+# How the train/validation boundary is drawn inside train.  The default is the
+# 10 Sep boundary and reproduces it exactly; `crop_count_balanced` instead picks
+# the admissible subset of train acquisitions whose crops are spread most evenly
+# over the classes, because the fitness is weighted F1 and the 10 Sep validation
+# weighted C0 and C2 2.5x more than C1 and C3.  Either way the train/test
+# boundary, the grouping by acquisition and one acquisition per class on each
+# side are untouched.
+VALIDATION_BALANCE = "acquisition_stratified"
+VALIDATION_BALANCES = ("acquisition_stratified", "crop_count_balanced")
+# Frozen criterion, not a threshold to tune: the balanced policy publishes the
+# best subset it found either way and records the ratio it reached.
+VALIDATION_BALANCE_TARGET_RATIO = 1.5
+
 # --- Seeds ----------------------------------------------------------------
 STUDY_SEED = 23  # seeds `random` right before the GA population is created
 CANDIDATE_SEED = 1729  # goes into the per-candidate derived training seed
