@@ -6,6 +6,7 @@ of it is written.
 """
 
 import csv
+import dataclasses
 import hashlib
 import json
 import random
@@ -24,6 +25,7 @@ import cnn.model
 import config
 import ga
 import plot_fitness_evolution
+import pretrain
 import train_final
 from cnn.data_setup import (
     CROPPED_HYPERCUBE_FIELDS,
@@ -2244,3 +2246,310 @@ def test_checkpoint_constant_reaches_a_run_that_was_given_no_flag(final_dataset,
     )
 
     assert trained[0].checkpoint == path
+
+
+# --- The contrastive pretraining and its two cohorts ------------------------
+# Ticket 14.  What these watch is the leakage contract — which Acquisitions can
+# reach a checkpoint at all — and the view construction the pretext task is made
+# of: two different band triplets of one crop, prepared the way the network sees
+# them.  The loop itself is replaced by a fake everywhere below, so none of this
+# needs a GPU.
+
+
+def fake_backbone(epochs=2, state=None):
+    """What an injected pretrainer hands back: a backbone and one row per epoch."""
+    return pretrain.PretrainedBackbone(
+        state={"conv1.weight": torch.zeros(1)} if state is None else state,
+        history=[{"epoch": epoch, "nt_xent": 5.0 / epoch} for epoch in range(1, epochs + 1)],
+    )
+
+
+@pytest.fixture
+def pretrain_dataset(tmp_path, monkeypatch):
+    """Train-fit, validation and test crops, with config pointed at them.
+
+    Two train-fit Acquisitions, so a cohort's per-band statistics have something
+    to vary over, and one Acquisition on each of the other two sides.
+    """
+    axis = write_spectral_axes(tmp_path, FINAL_WAVELENGTHS)
+    crops = [
+        ("fit-a", "acq-fit", "C0", crop(0.2, height=2, width=3)),
+        ("fit-b", "acq-fit-two", "C1", crop(0.5, height=2, width=3)),
+        ("val-a", "acq-validation", "C2", crop(0.4, height=2, width=3)),
+        ("test-a", "acq-test", "C3", crop(0.8, height=2, width=3)),
+    ]
+    manifest = write_dataset(tmp_path, crops, axis_id=spectral_axis_id(FINAL_WAVELENGTHS))
+    partitions = write_partitions(
+        tmp_path,
+        [
+            partition_row("fit-a", "acq-fit", "C0", "train", "train"),
+            partition_row("fit-b", "acq-fit-two", "C1", "train", "train"),
+            partition_row("val-a", "acq-validation", "C2", "train", "validation"),
+            partition_row("test-a", "acq-test", "C3", "test", ""),
+        ],
+    )
+    for name, value in (
+        ("HYPERCUBES_MANIFEST", manifest),
+        ("SPECTRAL_AXES", axis),
+        ("PARTITIONS", partitions),
+        ("MODELS_DIR", tmp_path / "models"),
+        ("DEVICE", "cpu"),
+    ):
+        monkeypatch.setattr(config, name, value)
+    return tmp_path
+
+
+def run_pretrain(cohort="fit", *, epochs=2, trainer=None, **arguments):
+    """One pretraining run whose training loop is replaced by a fake.
+
+    Returns the contexts the pretrainer was handed, which is where the crops it
+    was allowed to see are.
+    """
+    seen = []
+
+    def fake(context):
+        seen.append(context)
+        return fake_backbone(epochs)
+
+    pretrain.pretrain_command(
+        cohort,
+        epochs=epochs,
+        trainer=trainer if trainer is not None else fake,
+        verbose=False,
+        **arguments,
+    )
+    return seen
+
+
+def test_pretrain_fit_cohort_is_the_22_the_search_fits_on():
+    """The search's backbone may not have seen the crops its fitness is scored on."""
+    rows = load_partitions(REFERENCE_PARTITIONS)
+
+    cohort = pretrain.cohort_rows(rows, "fit")
+
+    acquisitions = {row["acquisition_id"] for row in cohort}
+    assert len(acquisitions) == 22
+    assert all(row["partition"] == "train" for row in cohort)
+    for kept_out in ("validation", "test"):
+        assert acquisitions.isdisjoint(
+            {
+                row["acquisition_id"]
+                for row in rows
+                if kept_out in (row["partition"], row["selection_partition"])
+            }
+        )
+
+
+def test_pretrain_train_cohort_is_the_28_the_final_model_trains_on():
+    rows = load_partitions(REFERENCE_PARTITIONS)
+
+    cohort = pretrain.cohort_rows(rows, "train")
+
+    acquisitions = {row["acquisition_id"] for row in cohort}
+    assert len(acquisitions) == 28
+    assert acquisitions.isdisjoint(
+        {row["acquisition_id"] for row in rows if row["partition"] == "test"}
+    )
+    # Not the same cohort as `fit`: the six validation Acquisitions are in it.
+    assert acquisitions > {row["acquisition_id"] for row in pretrain.cohort_rows(rows, "fit")}
+
+
+def test_pretrain_refuses_a_cohort_this_protocol_does_not_have():
+    with pytest.raises(ValueError, match="not a pretraining cohort"):
+        pretrain.cohort_rows(load_partitions(REFERENCE_PARTITIONS), "everything")
+
+
+def test_pretrain_two_views_of_a_crop_are_two_distinct_in_range_triplets():
+    torch.manual_seed(20260907)
+
+    for _ in range(64):
+        left, right = pretrain.draw_two_views(448)
+
+        assert left != right
+        for triplet in (left, right):
+            assert len(triplet) == 3
+            assert len(set(triplet)) == 3
+            assert all(type(band) is int and 0 <= band < 448 for band in triplet)
+
+
+def test_pretrain_views_repeat_under_the_same_torch_seed():
+    torch.manual_seed(11)
+    drawn = [pretrain.draw_two_views(448) for _ in range(8)]
+    torch.manual_seed(11)
+
+    assert [pretrain.draw_two_views(448) for _ in range(8)] == drawn
+
+
+def test_pretrain_refuses_an_axis_too_short_to_draw_two_different_triplets():
+    with pytest.raises(ValueError, match="at least four bands"):
+        pretrain.draw_two_views(3)
+
+
+def test_pretrain_statistics_are_the_ones_the_evaluator_would_fit(tiny_dataset):
+    """Sliced per-band statistics have to equal the three-channel fit, or the
+    pretext task is not the downstream one."""
+    manifest, rows = tiny_dataset
+    crops = load_hypercubes(manifest, rows["fit"] + rows["validation"], verbose=False)
+
+    mean, std = pretrain.per_band_foreground_statistics(crops)
+
+    for triplet in ((0, 1, 2), (4, 0, 3), (2, 3, 0)):
+        assembled = pretrain.triplet_statistics(mean, std, triplet)
+        fitted = fit_foreground_normalization(crops, triplet)
+        assert np.allclose(assembled, fitted, atol=1e-6)
+
+
+def test_pretrain_statistics_refuse_a_band_with_no_foreground_variance(tiny_dataset):
+    manifest, rows = tiny_dataset
+    crops = load_hypercubes(manifest, rows["fit"][:1], verbose=False)
+
+    with pytest.raises(ValueError, match="zero-variance band"):
+        pretrain.per_band_foreground_statistics(crops)
+
+
+def test_pretrain_view_is_prepared_the_way_the_network_sees_it(tmp_path):
+    """Same size, same masking: a view is a model input, not a raw slice."""
+    foreground = np.zeros((4, 6), dtype=np.bool_)
+    foreground[1:3, 2:5] = True
+    manifest = write_dataset(
+        tmp_path,
+        [
+            ("one", "acq", "C0", crop(0.3, height=4, width=6, foreground=foreground)),
+            ("two", "acq", "C0", crop(0.7, height=4, width=6, foreground=foreground)),
+        ],
+    )
+    crops = load_hypercubes(
+        manifest,
+        [
+            partition_row("one", "acq", "C0", "train", "train"),
+            partition_row("two", "acq", "C0", "train", "train"),
+        ],
+        verbose=False,
+    )
+    mean, std = pretrain.per_band_foreground_statistics(crops)
+    dataset = pretrain.BandTripletViewDataset(crops, mean, std, config.IMAGE_SIZE)
+    torch.manual_seed(3)
+
+    left, right = dataset[0]
+
+    assert left.shape == (3, *config.IMAGE_SIZE)
+    assert right.shape == (3, *config.IMAGE_SIZE)
+    # Two different triplets of the same crop are two different images.
+    assert not torch.equal(left, right)
+    # The background carries no invented reflectance: the mask is a quarter of
+    # this crop, so most of every view is still zero whatever the augmentation
+    # did to it.
+    assert all(float((view == 0).float().mean()) > 0.5 for view in (left, right))
+
+
+def test_pretrain_writes_the_checkpoint_and_a_sidecar_of_what_it_saw(pretrain_dataset):
+    run_pretrain("fit", epochs=3)
+
+    paths = pretrain.pretrain_paths("fit")
+    assert paths["checkpoint"].is_file()
+    record = json.loads(paths["sidecar"].read_text())
+    assert record["cohort"] == "fit"
+    assert record["acquisition_ids"] == ["acq-fit", "acq-fit-two"]
+    assert record["acquisition_count"] == 2
+    assert record["crop_count"] == 2
+    assert record["seed"] == config.PRETRAIN_SEED
+    assert record["epochs"] == 3
+    assert record["view_policy"] == config.PRETRAIN_VIEW_POLICY
+    assert record["libraries"]["torch"] == torch.__version__
+    assert record["nt_xent"] == [5.0, 2.5, 5.0 / 3]
+    # The sidecar names the bytes it sits beside, so a checkpoint and a record
+    # that drifted apart can be told apart.
+    assert record["checkpoint"] == checkpoint_identity(paths["checkpoint"])
+
+
+def test_pretrain_fit_checkpoint_never_sees_a_validation_or_a_test_crop(pretrain_dataset):
+    seen = run_pretrain("fit")
+
+    assert {crop.cropped_hypercube_id for crop in seen[0].crops} == {"fit-a", "fit-b"}
+
+
+def test_pretrain_train_checkpoint_sees_every_train_crop_and_no_test_crop(pretrain_dataset):
+    seen = run_pretrain("train")
+
+    assert {crop.cropped_hypercube_id for crop in seen[0].crops} == {"fit-a", "fit-b", "val-a"}
+    record = json.loads(pretrain.pretrain_paths("train")["sidecar"].read_text())
+    assert record["acquisition_ids"] == ["acq-fit", "acq-fit-two", "acq-validation"]
+
+
+def test_pretrain_refuses_to_rewrite_a_checkpoint_that_is_already_there(pretrain_dataset):
+    run_pretrain("fit")
+    written = pretrain.pretrain_paths("fit")["checkpoint"].read_bytes()
+
+    with pytest.raises(FileExistsError, match="already there"):
+        run_pretrain("fit")
+
+    assert pretrain.pretrain_paths("fit")["checkpoint"].read_bytes() == written
+
+
+def test_pretrain_rewrites_a_checkpoint_when_it_is_told_to(pretrain_dataset):
+    run_pretrain("fit", epochs=2)
+
+    run_pretrain("fit", epochs=4, force=True)
+
+    assert json.loads(pretrain.pretrain_paths("fit")["sidecar"].read_text())["epochs"] == 4
+
+
+def test_pretrain_writes_where_it_is_told_and_keeps_the_sidecar_beside_it(
+    pretrain_dataset, tmp_path
+):
+    run_pretrain("fit", output=tmp_path / "elsewhere" / "backbone.pt")
+
+    assert (tmp_path / "elsewhere" / "backbone.pt").is_file()
+    assert (tmp_path / "elsewhere" / "backbone.json").is_file()
+    assert not pretrain.pretrain_paths("fit")["checkpoint"].exists()
+
+
+def test_pretrain_checkpoint_loads_into_the_evaluator_backbone(pretrain_dataset, backbone_state):
+    """The file this writes is the file `--checkpoint` reads: one contract, checked."""
+    run_pretrain("fit", trainer=lambda context: fake_backbone(2, state=backbone_state))
+
+    model = build_resnet50(torch.device("cpu"), pretrain.pretrain_paths("fit")["checkpoint"])
+
+    state = model.state_dict()
+    assert all(torch.equal(state[name], value) for name, value in backbone_state.items())
+    assert state["fc.weight"].shape == (config.NUM_CLASSES, 2048)
+
+
+def test_pretrain_refuses_a_checkpoint_that_carries_a_classification_head(pretrain_dataset):
+    head = {"conv1.weight": torch.zeros(1), "fc.weight": torch.zeros(config.NUM_CLASSES, 2048)}
+
+    with pytest.raises(ValueError, match="never carries a classification head"):
+        run_pretrain("fit", trainer=lambda context: fake_backbone(2, state=head))
+
+    assert not pretrain.pretrain_paths("fit")["checkpoint"].exists()
+
+
+def test_pretrain_refuses_a_pretrainer_that_returns_the_wrong_history(pretrain_dataset):
+    with pytest.raises(ValueError, match="one history row per epoch"):
+        run_pretrain("fit", epochs=5, trainer=lambda context: fake_backbone(2))
+
+
+def test_pretrain_refuses_a_cohort_smaller_than_one_batch(pretrain_dataset):
+    """`drop_last` on a two-crop cohort would leave the loop nothing to train on."""
+    seen = run_pretrain("fit")
+
+    with pytest.raises(ValueError, match="fewer than the batch size"):
+        pretrain.pretrain_backbone(dataclasses.replace(seen[0], num_workers=0))
+
+
+def test_pretrain_refuses_an_output_that_is_not_a_checkpoint():
+    with pytest.raises(ValueError, match="is a .pt file"):
+        pretrain.pretrain_paths("fit", Path("out/models/pretrain_fit.pth"))
+
+
+def test_pretrain_sidecar_records_the_run_it_was_given_not_the_constants(pretrain_dataset):
+    """A record that quoted `config` would describe a run that did not happen."""
+    seen = run_pretrain("fit")
+    context = dataclasses.replace(seen[0], batch_size=4, temperature=0.07, num_workers=0)
+
+    record = pretrain.sidecar(
+        context, history=[{"nt_xent": 1.0}], wavelengths=FINAL_WAVELENGTHS, identity=None
+    )
+
+    assert (record["batch_size"], record["temperature"], record["num_workers"]) == (4, 0.07, 0)
+    assert record["batch_size"] != config.PRETRAIN_BATCH_SIZE

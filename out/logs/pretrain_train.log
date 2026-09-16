@@ -1,0 +1,40 @@
+loading 868 train crops from 28 acquisitions
+  loaded 100/868 hypercubes
+  loaded 200/868 hypercubes
+  loaded 300/868 hypercubes
+  loaded 400/868 hypercubes
+  loaded 500/868 hypercubes
+  loaded 600/868 hypercubes
+  loaded 700/868 hypercubes
+  loaded 800/868 hypercubes
+  loaded 868/868 hypercubes
+cohort         train
+crops          868 in 28 acquisitions
+bands          448
+device         cuda  |  epochs 200  |  seed 20260907
+view policy    two-random-band-triplets-v1
+  epoch    1/200  nt_xent 5.5154
+  epoch   10/200  nt_xent 3.9494
+  epoch   20/200  nt_xent 2.9774
+  epoch   30/200  nt_xent 2.4610
+  epoch   40/200  nt_xent 2.1179
+  epoch   50/200  nt_xent 1.9320
+  epoch   60/200  nt_xent 1.7928
+  epoch   70/200  nt_xent 1.6876
+  epoch   80/200  nt_xent 1.6203
+  epoch   90/200  nt_xent 1.5724
+  epoch  100/200  nt_xent 1.5111
+  epoch  110/200  nt_xent 1.4712
+  epoch  120/200  nt_xent 1.4404
+  epoch  130/200  nt_xent 1.4032
+  epoch  140/200  nt_xent 1.3860
+  epoch  150/200  nt_xent 1.3481
+  epoch  160/200  nt_xent 1.3448
+  epoch  170/200  nt_xent 1.3123
+  epoch  180/200  nt_xent 1.3060
+  epoch  190/200  nt_xent 1.2957
+  epoch  200/200  nt_xent 1.2776
+nt_xent        5.5154 -> 1.2776  (196.0 s)
+checkpoint     /home/pablosetra/Documents/tfg/select-best-bands/out/models/pretrain_train.pt
+checkpoint sha b123ab04ba511f684b3af8a33c0f22eae50edfb239b50bc1fdf26d1467bd2edf
+sidecar        /home/pablosetra/Documents/tfg/select-best-bands/out/models/pretrain_train.json

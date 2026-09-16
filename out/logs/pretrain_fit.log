@@ -1,0 +1,39 @@
+loading 708 fit crops from 22 acquisitions
+  loaded 100/708 hypercubes
+  loaded 200/708 hypercubes
+  loaded 300/708 hypercubes
+  loaded 400/708 hypercubes
+  loaded 500/708 hypercubes
+  loaded 600/708 hypercubes
+  loaded 700/708 hypercubes
+  loaded 708/708 hypercubes
+cohort         fit
+crops          708 in 22 acquisitions
+bands          448
+device         cuda  |  epochs 200  |  seed 20260907
+view policy    two-random-band-triplets-v1
+  epoch    1/200  nt_xent 5.4670
+  epoch   10/200  nt_xent 4.2542
+  epoch   20/200  nt_xent 3.2747
+  epoch   30/200  nt_xent 2.6775
+  epoch   40/200  nt_xent 2.3573
+  epoch   50/200  nt_xent 2.1245
+  epoch   60/200  nt_xent 1.9516
+  epoch   70/200  nt_xent 1.8490
+  epoch   80/200  nt_xent 1.7007
+  epoch   90/200  nt_xent 1.6273
+  epoch  100/200  nt_xent 1.5850
+  epoch  110/200  nt_xent 1.5287
+  epoch  120/200  nt_xent 1.4801
+  epoch  130/200  nt_xent 1.4465
+  epoch  140/200  nt_xent 1.4209
+  epoch  150/200  nt_xent 1.4025
+  epoch  160/200  nt_xent 1.3636
+  epoch  170/200  nt_xent 1.3416
+  epoch  180/200  nt_xent 1.3370
+  epoch  190/200  nt_xent 1.3015
+  epoch  200/200  nt_xent 1.2901
+nt_xent        5.4670 -> 1.2901  (179.3 s)
+checkpoint     /home/pablosetra/Documents/tfg/select-best-bands/out/models/pretrain_fit.pt
+checkpoint sha c40561a70ebe71e0320664dd5799f09307f9ef302c0dad98574a2efb34f53b80
+sidecar        /home/pablosetra/Documents/tfg/select-best-bands/out/models/pretrain_fit.json

@@ -59,6 +59,7 @@ select-best-bands/
 ├── ga.py                    # the search, its on-disk cache, its outputs
 ├── train_final.py           # the final model and the single read of the test set
 ├── bootstrap.py             # the confidence interval, by acquisition
+├── pretrain.py              # the optional contrastive backbone, one per cohort
 ├── run.sh                   # the four steps above, chained, with logs
 ├── cnn/
 │   ├── data_setup.py        # manifest, partition, NPZ, normalization, dataset
@@ -142,6 +143,30 @@ uv run python plot_fitness_evolution.py 22  # redraw the curve from the tables
 uv run python analyze_test_errors.py 22   # where the test errors fall, no GPU
 ```
 
+### The optional contrastive backbone
+
+By default a candidate is fine-tuned from ImageNet weights and nothing else,
+which is what the 10 Sep run did. `pretrain.py` writes an alternative starting
+point: a ResNet50 backbone adapted by SimCLR on band-triplet views — two views
+of a crop are two *different* random band triplets of it — so the pretext task
+is the downstream one, represent a fig well whatever three bands it is shown.
+
+```bash
+uv run python pretrain.py --cohort fit      # out/models/pretrain_fit.pt,   22 acquisitions
+uv run python pretrain.py --cohort train    # out/models/pretrain_train.pt, 28 acquisitions
+uv run python ga.py 22 --checkpoint out/models/pretrain_fit.pt
+uv run python train_final.py 22 --checkpoint out/models/pretrain_train.pt
+```
+
+**Two checkpoints, never one.** The search may only start from a backbone that
+has not seen the validation crops it is scored on, so it gets the 22 train-fit
+Acquisitions; the final model trains on all 28 train Acquisitions and gets the
+backbone to match. Neither cohort can contain a test Acquisition: only train
+rows are ever loaded. Each `.pt` has a JSON sidecar beside it naming the
+Acquisitions, the seed and the library versions it was written under, and a
+checkpoint is part of the fitness contract — candidates trained with one and
+without one never share a cache.
+
 ### Resuming
 
 `ga.py` writes every candidate it evaluates to `out/tables/exp_NN_candidates.csv`
@@ -189,6 +214,12 @@ NUM_EPOCHS = 50                # no early stopping
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 IMAGE_SIZE = (64, 128)
+
+# Contrastive pretraining (pretrain.py only; off unless a checkpoint is named)
+BACKBONE_CHECKPOINT = None     # ImageNet and nothing else, the 10 Sep behaviour
+PRETRAIN_EPOCHS = 200
+PRETRAIN_BATCH_SIZE = 128
+PRETRAIN_TEMPERATURE = 0.2     # NT-Xent
 
 # Bootstrap
 BOOTSTRAP_RESAMPLES = 5000     # whole acquisitions, not crops

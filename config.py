@@ -95,6 +95,29 @@ NUM_WORKERS = 8
 # so candidates trained with one and without one never share a cache.
 BACKBONE_CHECKPOINT = None  # e.g. MODELS_DIR / "pretrain_fit.pt"
 
+# --- Contrastive pretraining ----------------------------------------------
+# `pretrain.py` alone: the SimCLR loop whose two views of a crop are two random
+# band triplets of that same crop.  These are the values of fig-aflatoxin's
+# experiment 13, the one intervention of that record that beat its own
+# prospective criterion (+0.023 pooled, 8 of 8 candidates), and they are here so
+# the rewrite can be read beside it.  Nothing in the 10 Sep run reads them: a
+# checkpoint is used only when `BACKBONE_CHECKPOINT` or `--checkpoint` names one.
+PRETRAIN_SEED = 20260907
+PRETRAIN_EPOCHS = 200
+PRETRAIN_BATCH_SIZE = 128
+PRETRAIN_LEARNING_RATE = 1e-4  # AdamW, low on purpose: the whole backbone moves
+PRETRAIN_TEMPERATURE = 0.2
+PRETRAIN_PROJECTION_HIDDEN = 512
+PRETRAIN_PROJECTION_DIM = 128
+# Two cohorts, never one: `fit` is the 22 Acquisitions the search fits on and is
+# the only backbone a search may start from; `train` is all 28 train
+# Acquisitions and is the one the final model starts from.  A backbone that had
+# seen the validation crops would contaminate the fitness it is scored on.
+PRETRAIN_COHORTS = ("fit", "train")
+# The name of how a view is drawn, recorded in every sidecar: a checkpoint
+# written under another rule is not comparable with these, whatever its bytes.
+PRETRAIN_VIEW_POLICY = "two-random-band-triplets-v1"
+
 # --- Bootstrap ------------------------------------------------------------
 BOOTSTRAP_RESAMPLES = 5000  # whole acquisitions, not crops
 BOOTSTRAP_SEED = 1729  # the same number as CANDIDATE_SEED in the real run, on purpose
