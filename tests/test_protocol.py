@@ -8,11 +8,13 @@ of it is written.
 import csv
 import json
 import random
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
+import analyze_test_errors
 import bootstrap
 import check_data
 import config
@@ -1575,3 +1577,253 @@ def test_check_data_verifies_the_manifest_it_is_given(sanity_dataset, tmp_path, 
 
     assert exit_code == 0
     assert "13 files, 0 checksum mismatches" in capsys.readouterr().out
+
+
+# --- The test errors of one experiment ---------------------------------------
+
+
+ERROR_WAVELENGTHS = [400.0, 450.0, 500.0, 550.0, 600.0]  # one per band of `crop`
+ERROR_BANDS = (4, 1, 2)
+
+# identity, acquisition, actual, predicted, foreground reflectance, foreground pixels
+ERROR_CROPS = (
+    ("a-0", "acq-a", "C0", "C0", 0.5, 4),
+    ("a-1", "acq-a", "C0", "C0", 0.5, 4),
+    ("b-0", "acq-b", "C1", "C1", 0.5, 4),
+    ("b-1", "acq-b", "C1", "C1", 0.5, 4),
+    ("c-0", "acq-c", "C2", "C2", 0.5, 4),
+    ("c-1", "acq-c", "C2", "C3", 0.5, 4),
+    ("d-0", "acq-d", "C3", "C0", 0.1, 1),
+    ("d-1", "acq-d", "C3", "C0", 0.1, 1),
+)
+
+
+def error_prediction_rows():
+    """The fixture's crops as the rows `train_final.py` would have written."""
+    return [
+        {
+            "cropped_hypercube_id": identity,
+            "acquisition_id": acquisition,
+            "actual": actual,
+            "predicted": predicted,
+        }
+        for identity, acquisition, actual, predicted, _, _ in ERROR_CROPS
+    ]
+
+
+def error_crop(value, foreground_pixels):
+    """A 2x2 crop whose first `foreground_pixels` pixels hold `value` per band."""
+    mask = np.zeros((2, 2), dtype=np.bool_)
+    mask.reshape(-1)[:foreground_pixels] = True
+    return crop(value, height=2, width=2, foreground=mask)
+
+
+@pytest.fixture
+def errors_dataset(tmp_path, monkeypatch):
+    """Four test acquisitions of one class each, two of them misread, plus train."""
+    axis = write_spectral_axes(tmp_path, ERROR_WAVELENGTHS)
+    held_out = [
+        (identity, acquisition, actual, error_crop(value, pixels))
+        for identity, acquisition, actual, _, value, pixels in ERROR_CROPS
+    ]
+    fitted = [
+        ("train-0", "acq-train", "C0", error_crop(0.5, 4)),
+        ("validation-0", "acq-validation", "C1", error_crop(0.5, 4)),
+    ]
+    manifest = write_dataset(
+        tmp_path, held_out + fitted, axis_id=spectral_axis_id(ERROR_WAVELENGTHS)
+    )
+    partitions = write_partitions(
+        tmp_path,
+        [
+            partition_row(identity, acquisition, severity, "test", "")
+            for identity, acquisition, severity, _ in held_out
+        ]
+        + [
+            partition_row("train-0", "acq-train", "C0", "train", "train"),
+            partition_row("validation-0", "acq-validation", "C1", "train", "validation"),
+        ],
+    )
+    for name, value in (
+        ("TABLES_DIR", tmp_path / "tables"),
+        ("FIGURES_DIR", tmp_path / "figures"),
+        ("HYPERCUBES_MANIFEST", manifest),
+        ("SPECTRAL_AXES", axis),
+        ("PARTITIONS", partitions),
+    ):
+        monkeypatch.setattr(config, name, value)
+    write_test_predictions(21, ERROR_BANDS, error_prediction_rows())
+    write_final_metrics(21, ERROR_BANDS, nanometres=(600.0, 450.0, 500.0))
+    return tmp_path
+
+
+def run_analysis(experiment=21, *, bands=None):
+    return analyze_test_errors.analyze_command(experiment, bands=bands, verbose=False)
+
+
+def error_predictions():
+    """The predictions of the fixture, without going through a file."""
+    return bootstrap.TestPredictions(
+        *(
+            np.array(column)
+            for column in zip(
+                *((actual, predicted, acquisition) for _, acquisition, actual, predicted, _, _ in ERROR_CROPS),
+                strict=True,
+            )
+        )
+    )
+
+
+def analysis_table():
+    """The rows `analyze_test_errors.py` wrote, in the order it wrote them."""
+    path = analyze_test_errors.analysis_paths(21)["analysis"]
+    return list(csv.DictReader(path.open(newline="")))
+
+
+def test_error_analysis_scores_each_acquisition_exactly_as_the_bootstrap_does(errors_dataset):
+    run_analysis()
+
+    written = analysis_table()
+    scored = bootstrap.per_acquisition_scores(error_predictions())
+    assert [row["acquisition_id"] for row in written] == [
+        row["acquisition_id"] for row in scored
+    ]
+    assert [float(row["weighted_f1"]) for row in written] == [
+        row["weighted_f1"] for row in scored
+    ]
+
+
+def test_error_analysis_counts_every_actual_predicted_pair_per_acquisition(errors_dataset):
+    run_analysis()
+
+    counted = {row["acquisition_id"]: row for row in analysis_table()}
+    assert counted["acq-d"]["C3_as_C0"] == "2"
+    assert counted["acq-d"]["C3_as_C3"] == "0"
+    assert counted["acq-c"]["C2_as_C2"] == "1"
+    assert counted["acq-c"]["C2_as_C3"] == "1"
+    assert counted["acq-a"]["C0_as_C0"] == "2"
+    assert [row["error_count"] for row in analysis_table()] == ["2", "1", "0", "0"]
+
+
+def test_error_analysis_marks_the_two_weakest_acquisitions_and_no_others(errors_dataset):
+    run_analysis()
+
+    grouped = {row["acquisition_id"]: row["group"] for row in analysis_table()}
+    assert grouped == {
+        "acq-d": "weak",
+        "acq-c": "weak",
+        "acq-a": "reference",
+        "acq-b": "reference",
+    }
+
+
+def test_error_analysis_measures_exposure_and_segmentation_from_the_crops(errors_dataset):
+    run_analysis()
+
+    measured = {row["acquisition_id"]: row for row in analysis_table()}
+    assert float(measured["acq-d"]["visible_reflectance_mean"]) == pytest.approx(0.1)
+    assert float(measured["acq-a"]["visible_reflectance_mean"]) == pytest.approx(0.5)
+    assert float(measured["acq-d"]["foreground_fraction"]) == pytest.approx(0.25)
+    assert float(measured["acq-a"]["foreground_fraction"]) == pytest.approx(1.0)
+    assert float(measured["acq-a"]["crop_area_px_mean"]) == pytest.approx(4.0)
+
+
+def test_error_analysis_reports_only_the_band_ranges_the_spectral_axis_covers():
+    covered = analyze_test_errors.ranges_in_axis(ERROR_WAVELENGTHS)
+
+    assert [band_range.name for band_range in covered] == ["visible"]
+    assert covered[0].indices == [0, 1, 2, 3, 4]
+
+
+def test_error_analysis_draws_the_misclassified_crops_of_the_weak_acquisitions_only(
+    errors_dataset,
+):
+    records = analyze_test_errors.read_records(
+        train_final.final_paths(21, ERROR_BANDS)["predictions"]
+    )
+
+    shown = analyze_test_errors.misclassified(records, ("acq-d", "acq-c"))
+
+    assert [entry.cropped_hypercube_id for entry in shown] == ["c-1", "d-0", "d-1"]
+    assert [(entry.actual, entry.predicted) for entry in shown] == [
+        ("C2", "C3"),
+        ("C3", "C0"),
+        ("C3", "C0"),
+    ]
+
+
+def test_error_analysis_writes_its_table_and_its_figure(errors_dataset):
+    run_analysis()
+
+    paths = analyze_test_errors.analysis_paths(21)
+    assert paths["analysis"].name == "exp_21_test_error_analysis.csv"
+    assert paths["figure"].name == "exp_21_test_errors.png"
+    assert paths["analysis"].exists() and paths["figure"].exists()
+
+
+def test_error_analysis_run_twice_writes_the_same_csv(errors_dataset):
+    run_analysis()
+    first = analyze_test_errors.analysis_paths(21)["analysis"].read_bytes()
+
+    run_analysis()
+
+    assert analyze_test_errors.analysis_paths(21)["analysis"].read_bytes() == first
+
+
+def test_error_analysis_refuses_to_overwrite_the_analysis_of_another_triplet(errors_dataset):
+    run_analysis()
+    write_final_metrics(21, (0, 1, 2), nanometres=(400.0, 450.0, 500.0))
+    write_test_predictions(21, (0, 1, 2), error_prediction_rows())
+
+    with pytest.raises(ValueError, match="recorded for bands 4_1_2"):
+        run_analysis(bands=(0, 1, 2))
+
+
+@pytest.mark.skipif(
+    not RECORDED_PREDICTIONS.exists(), reason="experiment 21 has not been run here"
+)
+def test_error_analysis_reproduces_the_seventeen_extreme_confusions_of_experiment_21():
+    """The C0<->C3 block the ticket asks about, in the record the thesis quotes."""
+    predictions = bootstrap.read_predictions(RECORDED_PREDICTIONS)
+
+    counts = analyze_test_errors.confusion_counts(predictions)
+    weak = analyze_test_errors.weak_acquisitions(predictions)
+
+    assert counts[("C0", "C3")] + counts[("C3", "C0")] == 17
+    assert [capture[:8] for capture in weak] == ["042ef12d", "f7ab3a6e"]
+    assert counts[("C0", "C3")] == 13
+
+
+def test_error_analysis_refuses_a_grid_with_no_misread_crop_to_draw():
+    with pytest.raises(ValueError, match="no misread crops to draw"):
+        analyze_test_errors.draw_errors([], {}, ERROR_BANDS, ERROR_WAVELENGTHS, Path("unused.png"))
+
+
+def test_error_analysis_compares_the_crop_count_and_not_only_the_crops(errors_dataset):
+    run_analysis()
+
+    ranges = analyze_test_errors.ranges_in_axis(ERROR_WAVELENGTHS)
+    fields = analyze_test_errors.comparison_fields(ranges)
+    compared = analyze_test_errors.group_comparison(
+        [{**row, **{field: float(row[field]) for field in fields}} for row in analysis_table()],
+        fields,
+    )
+
+    assert compared[0]["measurement"] == "cropped_hypercube_count"
+    assert compared[0]["weak"] == compared[0]["reference"] == 2.0
+
+
+def test_error_analysis_says_where_the_extreme_confusions_fell():
+    predictions = error_predictions()
+
+    extreme = analyze_test_errors.extreme_confusions(predictions, ("acq-d",))
+
+    assert extreme["pair"] == "C0<->C3"
+    assert extreme["total"] == 2  # the two C3 crops of acq-d called C0
+    assert extreme["in_weak"] == 2
+    assert extreme["by_direction"] == {"C0->C3": 0, "C3->C0": 2}
+
+
+def test_error_analysis_refuses_to_report_an_acquisition_it_could_not_measure():
+    with pytest.raises(ValueError, match="no crop of acquisition acq-d"):
+        analyze_test_errors.analysis_rows(error_predictions(), {}, ERROR_BANDS)

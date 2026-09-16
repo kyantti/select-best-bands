@@ -64,6 +64,7 @@ select-best-bands/
 │   ├── data_setup.py        # manifest, partition, NPZ, normalization, dataset
 │   ├── engine.py            # the training and evaluation loops
 │   └── model.py             # ResNet50, data identity, seeds, metrics
+├── analyze_test_errors.py   # where the test errors fall, and what the crops look like
 ├── check_data.py            # NPZ checksums, once, and the per-class crop grid
 ├── create_summary_table.py  # summary of experiments 1–10 (v1 tool)
 ├── plot_fitness_evolution.py# redraws exp_NN_fitness_evolution.png from the tables
@@ -138,6 +139,7 @@ uv run python train_final.py 22           # the winner of exp_22_ga_summary.json
 uv run python train_final.py 22 --bands 366 262 225
 uv run python bootstrap.py 22             # the interval, from the predictions on disk
 uv run python plot_fitness_evolution.py 22  # redraw the curve from the tables
+uv run python analyze_test_errors.py 22   # where the test errors fall, no GPU
 ```
 
 ### Resuming
