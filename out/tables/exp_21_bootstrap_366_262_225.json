@@ -1,0 +1,92 @@
+{
+  "accuracy": 0.72265625,
+  "confidence_level": 0.95,
+  "experiment": 21,
+  "interval_method": "percentile",
+  "libraries": {
+    "numpy": "2.5.1",
+    "scikit-learn": "1.9.0"
+  },
+  "macro_f1": 0.7223819971537002,
+  "per_acquisition": [
+    {
+      "accuracy": 0.525,
+      "acquisition_id": "042ef12de6486f6790d1c2a8d8820047035c36dd881e41e1d1dc8352cc9a09d2",
+      "cropped_hypercube_count": 40,
+      "majority_class": "C0",
+      "weighted_f1": 0.6885245901639344
+    },
+    {
+      "accuracy": 0.525,
+      "acquisition_id": "f7ab3a6e68f785e04e4a4980dfcf7fd68bb18d6e783cb15cce0a25af49923e0d",
+      "cropped_hypercube_count": 40,
+      "majority_class": "C1",
+      "weighted_f1": 0.6885245901639344
+    },
+    {
+      "accuracy": 0.75,
+      "acquisition_id": "c0119e35ac17ec0a987a7e1002e82e84b7f97222832a09c27bc87c39fdfebe8e",
+      "cropped_hypercube_count": 24,
+      "majority_class": "C2",
+      "weighted_f1": 0.8571428571428571
+    },
+    {
+      "accuracy": 0.7777777777777778,
+      "acquisition_id": "06142d5d49d20c8bc4a6ad9fe7aa9a811a39c1a6dd57f1580ff6f5af63e388f7",
+      "cropped_hypercube_count": 36,
+      "majority_class": "C2",
+      "weighted_f1": 0.875
+    },
+    {
+      "accuracy": 0.7857142857142857,
+      "acquisition_id": "9d6c300cc96afa2103bc0a9c80d5c94c66301bfc6adc327cb931b7fe7da53749",
+      "cropped_hypercube_count": 28,
+      "majority_class": "C1",
+      "weighted_f1": 0.88
+    },
+    {
+      "accuracy": 0.7916666666666666,
+      "acquisition_id": "531abdc476ab037507c18f23e47b9740ed32c17de04bb70f67ad41f7008374b9",
+      "cropped_hypercube_count": 24,
+      "majority_class": "C3",
+      "weighted_f1": 0.8837209302325583
+    },
+    {
+      "accuracy": 0.84375,
+      "acquisition_id": "915bb10da27dabf4c23d2e64e9c1d8a94b26f68b28339e3ef7ac01c7ef42c637",
+      "cropped_hypercube_count": 32,
+      "majority_class": "C3",
+      "weighted_f1": 0.9152542372881356
+    },
+    {
+      "accuracy": 0.90625,
+      "acquisition_id": "5f930f2c0ca6fb21a00ebda3799d8ef5da67796b5671375f3eedeec18bb7e190",
+      "cropped_hypercube_count": 32,
+      "majority_class": "C0",
+      "weighted_f1": 0.9508196721311475
+    }
+  ],
+  "predictions": "exp_21_test_predictions_366_262_225.csv",
+  "primary_metric": "weighted_f1",
+  "resample_unit": "acquisition",
+  "resamples": 5000,
+  "schema_version": 1,
+  "seed": 1729,
+  "selected_band_indices": [
+    366,
+    262,
+    225
+  ],
+  "selected_wavelengths_nm": [
+    891.02,
+    747.5,
+    697.05
+  ],
+  "test_acquisition_count": 8,
+  "test_cropped_hypercube_count": 256,
+  "weighted_f1": 0.722142952443074,
+  "weighted_f1_ci95": [
+    0.6446439130060168,
+    0.847819167724381
+  ]
+}

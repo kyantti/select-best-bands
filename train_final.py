@@ -215,7 +215,7 @@ def winner_bands(experiment: int) -> Candidate:
 def final_paths(experiment: int, bands: Candidate) -> dict[str, Path]:
     """Every file one final model owns.  Another triplet writes to other names."""
     prefix = f"{ga.experiment_prefix(experiment)}_"
-    suffix = "_".join(str(int(band)) for band in bands)
+    suffix = ga.band_suffix(bands)
     return {
         "model": config.MODELS_DIR / f"{prefix}model_{suffix}.pt",
         "metrics": config.TABLES_DIR / f"{prefix}final_metrics_{suffix}.json",
@@ -261,6 +261,8 @@ def refuse_a_number_an_earlier_protocol_owns(experiment: int) -> None:
         )
 
 
+# What a rerun has to match for it to be a replay; the rule itself is ga.py's,
+# because the search, the final model and the bootstrap all obey the same one.
 RECORDED_SETTINGS = (
     "selected_band_indices",
     "seed",
@@ -283,33 +285,6 @@ def run_settings(bands: Candidate, device: torch.device, epochs: int) -> dict:
         "image_size": list(config.IMAGE_SIZE),
         "device_type": device.type,
     }
-
-
-def refuse_a_rerun_that_would_not_reproduce(path: Path, settings: dict) -> None:
-    """Refuse to rewrite a recorded result under settings that would change it.
-
-    Running the same experiment number and triplet again is a replay: it writes
-    the same bytes, so it is allowed and is how the record is re-verified.
-    Running it with another epoch count, seed or device would replace a result
-    under `out/` with a different one, which is the thing the invariant forbids.
-
-    Raises:
-        ValueError: If a metrics file is there and was recorded under other
-            settings, or cannot be read to find out.
-    """
-    if not path.exists():
-        return
-    try:
-        recorded = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as unreadable:
-        raise ValueError(f"cannot read {path.name} to check what it recorded: {unreadable}") from unreadable
-    differing = sorted(name for name in RECORDED_SETTINGS if recorded.get(name) != settings[name])
-    if differing:
-        raise ValueError(
-            f"{path.name} was recorded with a different {', '.join(differing)}; "
-            "rewriting it would replace one result under out/ with another. "
-            "Use a new experiment number."
-        )
 
 
 def write_confusion_matrix(path: Path, matrix: list[list[int]]) -> None:
@@ -466,7 +441,7 @@ def final_command(
     nanometres = wavelengths_of(selected, wavelengths)
     paths = final_paths(experiment, selected)
     settings = run_settings(selected, device, epochs)
-    refuse_a_rerun_that_would_not_reproduce(paths["metrics"], settings)
+    ga.refuse_a_rerun_that_would_not_reproduce(paths["metrics"], settings, RECORDED_SETTINGS)
 
     training = load_crops("train", wavelengths, verbose=verbose)
     mean, std = fit_foreground_normalization(training, selected)

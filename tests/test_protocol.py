@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import torch
 
+import bootstrap
 import config
 import ga
 import train_final
@@ -1080,3 +1081,257 @@ def test_final_refuses_a_rerun_that_would_not_reproduce_the_recorded_result(fina
         run_final(experiment=99, epochs=1)
 
     assert train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text() == recorded
+
+
+# --- The grouped bootstrap interval -----------------------------------------
+
+
+BOOTSTRAP_BANDS = (3, 0, 2)
+
+
+def write_test_predictions(experiment, bands, rows):
+    """A `train_final.py` predictions file: one row per held-out crop."""
+    path = train_final.final_paths(experiment, bands)["predictions"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as target:
+        writer = csv.DictWriter(
+            target,
+            fieldnames=("cropped_hypercube_id", "acquisition_id", "actual", "predicted"),
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def write_final_metrics(experiment, bands, nanometres=(550.0, 400.0, 500.0)):
+    """The part of `exp_NN_final_metrics_*.json` the bootstrap reads."""
+    path = train_final.final_paths(experiment, bands)["metrics"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "selected_band_indices": list(bands),
+                "selected_wavelengths_nm": list(nanometres),
+            }
+        )
+    )
+    return path
+
+
+def prediction_rows(*specs):
+    """`("acq", "C0", "C1")` is one crop of `acq` whose C0 was called C1."""
+    return [
+        {
+            "cropped_hypercube_id": f"crop-{number}",
+            "acquisition_id": acquisition,
+            "actual": actual,
+            "predicted": predicted,
+        }
+        for number, (acquisition, actual, predicted) in enumerate(specs)
+    ]
+
+
+BOOTSTRAP_ROWS = prediction_rows(
+    ("acq-right", "C0", "C0"),
+    ("acq-right", "C0", "C0"),
+    ("acq-right", "C1", "C1"),
+    ("acq-wrong", "C2", "C3"),
+    ("acq-wrong", "C2", "C3"),
+    ("acq-half", "C3", "C3"),
+    ("acq-half", "C3", "C0"),
+)
+
+
+@pytest.fixture
+def bootstrap_dataset(tmp_path, monkeypatch):
+    """One published final model of experiment 21, and nothing else to read.
+
+    `HYPERCUBES_MANIFEST` and `MODELS_DIR` are pointed at paths that do not
+    exist, so a bootstrap that opened a crop or a checkpoint would fail here.
+    """
+    for name, value in (
+        ("TABLES_DIR", tmp_path / "tables"),
+        ("FIGURES_DIR", tmp_path / "figures"),
+        ("MODELS_DIR", tmp_path / "no-models"),
+        ("HYPERCUBES_MANIFEST", tmp_path / "no-manifest.csv"),
+        ("SPECTRAL_AXES", tmp_path / "no-axes.csv"),
+        ("PARTITIONS", tmp_path / "no-partitions.csv"),
+    ):
+        monkeypatch.setattr(config, name, value)
+    write_test_predictions(21, BOOTSTRAP_BANDS, BOOTSTRAP_ROWS)
+    write_final_metrics(21, BOOTSTRAP_BANDS)
+    return tmp_path
+
+
+def run_bootstrap(experiment=21, *, bands=None, resamples=32, seed=7):
+    return bootstrap.bootstrap_command(
+        experiment, bands=bands, resamples=resamples, seed=seed, verbose=False
+    )
+
+
+def test_bootstrap_resamples_whole_acquisitions_and_never_a_single_crop():
+    acquisition = np.array(["a", "a", "a", "b", "c", "c"])
+    members = {name: np.flatnonzero(acquisition == name) for name in ("a", "b", "c")}
+
+    draws = bootstrap.grouped_resamples(acquisition, resamples=50, seed=3)
+
+    assert len(draws) == 50
+    for index in draws:
+        counts = {
+            name: int(np.count_nonzero(np.isin(index, member)))
+            for name, member in members.items()
+        }
+        # Every crop of a drawn acquisition comes along, as many times as it was
+        # drawn, and the three draws add up to the length of the resample.
+        for name, member in members.items():
+            assert counts[name] % len(member) == 0
+        assert sum(counts.values()) == len(index)
+        assert sum(counts[name] // len(members[name]) for name in members) == len(members)
+
+
+def test_bootstrap_repeats_exactly_under_the_same_seed_and_moves_under_another():
+    acquisition = np.array(["a", "a", "b", "c"])
+
+    first = bootstrap.grouped_resamples(acquisition, resamples=20, seed=11)
+    again = bootstrap.grouped_resamples(acquisition, resamples=20, seed=11)
+    other = bootstrap.grouped_resamples(acquisition, resamples=20, seed=12)
+
+    assert all(np.array_equal(one, two) for one, two in zip(first, again, strict=True))
+    assert not all(np.array_equal(one, two) for one, two in zip(first, other, strict=True))
+
+
+def bootstrap_predictions(rows=None):
+    """`BOOTSTRAP_ROWS` as the three aligned columns the bootstrap works on."""
+    rows = BOOTSTRAP_ROWS if rows is None else rows
+    return bootstrap.TestPredictions(
+        *(
+            np.array([row[column] for row in rows])
+            for column in ("actual", "predicted", "acquisition_id")
+        )
+    )
+
+
+def test_bootstrap_interval_is_the_percentile_pair_of_the_resampled_scores():
+    predictions = bootstrap_predictions()
+
+    interval = bootstrap.bootstrap_interval(predictions, resamples=64, seed=5)
+
+    assert interval.point == bootstrap.weighted_f1(predictions)
+    assert len(interval.scores) == 64
+    assert (interval.low, interval.high) == tuple(
+        np.percentile(interval.scores, list(config.BOOTSTRAP_PERCENTILES))
+    )
+    assert interval.low <= interval.high
+
+
+def test_bootstrap_per_acquisition_table_names_every_acquisition_worst_first():
+    table = bootstrap.per_acquisition_scores(bootstrap_predictions())
+
+    assert [row["acquisition_id"] for row in table] == ["acq-wrong", "acq-half", "acq-right"]
+    assert [row["cropped_hypercube_count"] for row in table] == [2, 2, 3]
+    assert [row["majority_class"] for row in table] == ["C2", "C3", "C0"]
+    assert table[0]["weighted_f1"] == 0.0 and table[0]["accuracy"] == 0.0
+    assert table[2]["weighted_f1"] == 1.0 and table[2]["accuracy"] == 1.0
+    assert [row["weighted_f1"] for row in table] == sorted(row["weighted_f1"] for row in table)
+
+
+def test_bootstrap_reads_the_only_final_model_of_the_experiment(bootstrap_dataset):
+    """No `--bands`: one published triplet is not ambiguous."""
+    run_bootstrap()
+
+    written = json.loads(bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text())
+    assert written["selected_band_indices"] == list(BOOTSTRAP_BANDS)
+    assert written["selected_wavelengths_nm"] == [550.0, 400.0, 500.0]
+    assert written["resamples"] == 32 and written["seed"] == 7
+    assert written["test_cropped_hypercube_count"] == 7
+    assert written["test_acquisition_count"] == 3
+    assert len(written["weighted_f1_ci95"]) == 2
+    assert len(written["per_acquisition"]) == 3
+
+
+def test_bootstrap_says_which_experiment_has_no_final_model(bootstrap_dataset):
+    with pytest.raises(ValueError, match="no final model|exp_22"):
+        run_bootstrap(experiment=22)
+
+
+def test_bootstrap_asks_for_bands_when_the_experiment_has_two_final_models(bootstrap_dataset):
+    other = (1, 2, 4)
+    write_test_predictions(21, other, BOOTSTRAP_ROWS)
+    write_final_metrics(21, other)
+
+    with pytest.raises(ValueError, match="--bands"):
+        run_bootstrap()
+
+    run_bootstrap(bands=other)
+    assert bootstrap.bootstrap_paths(21, other)["bootstrap"].exists()
+
+
+def test_bootstrap_of_a_triplet_with_no_predictions_names_the_missing_file(bootstrap_dataset):
+    train_final.final_paths(21, BOOTSTRAP_BANDS)["predictions"].unlink()
+
+    with pytest.raises(ValueError, match="exp_21_test_predictions_3_0_2.csv"):
+        run_bootstrap()
+
+
+def test_bootstrap_run_twice_writes_the_same_json(bootstrap_dataset):
+    run_bootstrap()
+    first = bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text()
+
+    run_bootstrap()
+
+    assert bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text() == first
+
+
+def test_bootstrap_refuses_a_rerun_that_would_not_reproduce_the_recorded_interval(
+    bootstrap_dataset,
+):
+    run_bootstrap(resamples=32, seed=7)
+    recorded = bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text()
+
+    with pytest.raises(ValueError, match="different resamples"):
+        run_bootstrap(resamples=64, seed=7)
+    with pytest.raises(ValueError, match="different seed"):
+        run_bootstrap(resamples=32, seed=8)
+
+    assert bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text() == recorded
+
+
+def test_bootstrap_refuses_an_interval_whose_predictions_have_changed_underneath(
+    bootstrap_dataset,
+):
+    """Same bands, same seed, same resamples, other predictions: another result."""
+    run_bootstrap()
+    recorded = bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text()
+    write_test_predictions(
+        21,
+        BOOTSTRAP_BANDS,
+        prediction_rows(*[("acq-right", "C0", "C0")] * 3, *[("acq-wrong", "C2", "C2")] * 4),
+    )
+
+    with pytest.raises(ValueError, match="different weighted_f1"):
+        run_bootstrap()
+
+    assert bootstrap.bootstrap_paths(21, BOOTSTRAP_BANDS)["bootstrap"].read_text() == recorded
+
+
+RECORDED_PREDICTIONS = (
+    config.ROOT / "out" / "tables" / "exp_21_test_predictions_366_262_225.csv"
+)
+
+
+@pytest.mark.skipif(
+    not RECORDED_PREDICTIONS.exists(), reason="experiment 21 has not been run here"
+)
+def test_bootstrap_reproduces_the_recorded_interval_of_experiment_21():
+    """The number the thesis quotes: 0.722, 95% CI [0.645, 0.848]."""
+    predictions = bootstrap.read_predictions(RECORDED_PREDICTIONS)
+
+    interval = bootstrap.bootstrap_interval(
+        predictions,
+        resamples=config.BOOTSTRAP_RESAMPLES,
+        seed=config.BOOTSTRAP_SEED,
+    )
+
+    assert interval.point == 0.722142952443074
+    assert (round(interval.low, 3), round(interval.high, 3)) == (0.645, 0.848)

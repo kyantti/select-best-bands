@@ -20,10 +20,10 @@ fi
 echo "=== syntax check ==="
 # check_data.py is compiled but not imported: it still uses the loaders that
 # protocolo-80-20/03 replaced, until ticket 10 rewrites it.
-uv run python -m compileall -q config.py split_dataset.py ga.py train_final.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
+uv run python -m compileall -q config.py split_dataset.py ga.py train_final.py bootstrap.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
 
 echo "=== import smoke test (config + scripts + cnn package) ==="
-uv run python -c "import config, split_dataset, ga, train_final, cnn.engine, cnn.data_setup, cnn.model; print('imports OK')"
+uv run python -c "import config, split_dataset, ga, train_final, bootstrap, cnn.engine, cnn.data_setup, cnn.model; print('imports OK')"
 
 echo "=== data files ==="
 uv run python - <<'PY'

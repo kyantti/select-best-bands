@@ -739,6 +739,43 @@ def experiment_paths(experiment: int) -> dict[str, Path]:
     }
 
 
+def band_suffix(bands) -> str:
+    """`366_262_225`: the triplet as it appears at the end of a result file's name."""
+    return "_".join(str(int(band)) for band in bands)
+
+
+def refuse_a_rerun_that_would_not_reproduce(path: Path, settings: dict, names) -> None:
+    """Refuse to rewrite a recorded result under settings that would change it.
+
+    Running the same thing again is a replay: it writes the same bytes, so it is
+    allowed, and it is how a number quoted in the thesis gets re-verified.
+    Running it with something else — another seed, another epoch count, another
+    resample count — would replace one result under `out/` with a different one,
+    which is what the invariant forbids.  `names` is the part of `settings` the
+    caller treats as the identity of its result, so each step decides what
+    counts as "the same run" while the rule stays in one place.
+
+    Raises:
+        ValueError: If a record is there and was written under other settings,
+            or cannot be read to find out.
+    """
+    if not path.exists():
+        return
+    try:
+        recorded = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as unreadable:
+        raise ValueError(
+            f"cannot read {path.name} to check what it recorded: {unreadable}"
+        ) from unreadable
+    differing = sorted(name for name in names if recorded.get(name) != settings[name])
+    if differing:
+        raise ValueError(
+            f"{path.name} was recorded with a different {', '.join(differing)}; "
+            "rewriting it would replace one result under out/ with another. "
+            "Use a new experiment number."
+        )
+
+
 def winner_results_path(experiment: int, winner: Candidate) -> Path:
     """The winner's own file, named after its bands as every v1 result was."""
     r, g, b = winner

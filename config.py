@@ -75,3 +75,6 @@ NUM_WORKERS = 8
 # --- Bootstrap ------------------------------------------------------------
 BOOTSTRAP_RESAMPLES = 5000  # whole acquisitions, not crops
 BOOTSTRAP_SEED = 1729  # the same number as CANDIDATE_SEED in the real run, on purpose
+BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
+# The two tails of that level, in the percent `numpy.percentile` wants.
+BOOTSTRAP_PERCENTILES = (2.5, 97.5)
