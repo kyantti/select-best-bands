@@ -36,10 +36,8 @@ from cnn.data_setup import (
     Hypercube,
     SelectedBandDataset,
     fit_foreground_normalization,
-    load_hypercubes,
-    load_partitions,
+    load_partition_crops,
     load_spectral_axis,
-    spectral_axis_id,
     wavelengths_of,
 )
 from cnn.model import build_resnet50, classification_metrics, predict, seed_everything
@@ -168,25 +166,6 @@ def predict_test(
 
 
 # --- The data -------------------------------------------------------------
-
-
-def load_crops(partition: str, wavelengths: list[float], *, verbose: bool) -> list[Hypercube]:
-    """Load the crops of one evaluation partition, in manifest order.
-
-    `partition` is "train" — all 28 Acquisitions, the inner validation split
-    included, because band selection is over — or "test".  Asking for one never
-    reads an artifact of the other.
-
-    Raises:
-        ValueError: If the crops were cut against another SpectralAxis.
-    """
-    rows = [row for row in load_partitions(config.PARTITIONS) if row["partition"] == partition]
-    if verbose:
-        print(f"loading {len(rows)} {partition} crops")
-    crops = load_hypercubes(config.HYPERCUBES_MANIFEST, rows, verbose=verbose)
-    if {crop.spectral_axis_id for crop in crops} != {spectral_axis_id(wavelengths)}:
-        raise ValueError(f"{partition} crops were cut against another SpectralAxis")
-    return crops
 
 
 def winner_bands(experiment: int) -> Candidate:
@@ -443,7 +422,9 @@ def final_command(
     settings = run_settings(selected, device, epochs)
     ga.refuse_a_rerun_that_would_not_reproduce(paths["metrics"], settings, RECORDED_SETTINGS)
 
-    training = load_crops("train", wavelengths, verbose=verbose)
+    training = load_partition_crops(
+        config.HYPERCUBES_MANIFEST, "train", wavelengths, verbose=verbose
+    )
     mean, std = fit_foreground_normalization(training, selected)
     context = FinalTraining(selected, training, mean, std, config.FINAL_SEED, device, epochs)
     if verbose:
@@ -468,7 +449,7 @@ def final_command(
         print(f"model          {paths['model']} ({trained_in:.1f} s)", flush=True)
         print("--- the test set is opened for the first time, after the save ---", flush=True)
 
-    test = load_crops("test", wavelengths, verbose=verbose)
+    test = load_partition_crops(config.HYPERCUBES_MANIFEST, "test", wavelengths, verbose=verbose)
     predictions = evaluator(
         FinalEvaluation(selected, test, mean, std, model.state, device)
     )

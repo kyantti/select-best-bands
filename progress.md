@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Last Updated:** 2026-09-16 (sesión 8)
+**Last Updated:** 2026-09-16 (sesión 9)
 **Branch:** feature/protocolo-80-20 (creada desde `feature/experiments`@9075d9b, que contiene b7f1fc9)
-**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01–09 `done`**; ninguno `in-progress`. Esta sesión cerró **protocolo-80-20/09** (`run.sh`, README, figura de fitness, `init.sh` y `CLAUDE.md`): `./run.sh 99 --population 4 --generations 1 --epochs 1` encadena los cuatro pasos y `plot_fitness_evolution.py 21` redibuja la curva byte a byte sin GPU. Next pick: protocolo-80-20/10 – `check_data.py` (`ready-for-agent`, su bloqueo 03 está `done`), el último de la fase 1; luego empieza la fase 2 por el 11.
+**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01–10 `done`, la fase 1 está cerrada**; ninguno `in-progress`. Esta sesión cerró **protocolo-80-20/10** (`check_data.py`): los 1.124 NPZ enlazados se verifican una vez contra el `artifact_checksum` del manifiesto y, solo si cuadran todos, se dibuja `sanity-check/data_sanity_check.png` con dos recortes de train por clase pasados por la misma preparación que ve la red. Con esto **ya no queda ningún módulo sin importar**: `init.sh` importa `check_data`. Next pick: protocolo-80-20/11 (capturas flojas del test, 0 h, depende del 08 que está `done`), el primero de la fase 2.
 
 **No empieces por repo-health/02.** La feature `protocolo-80-20` reescribe `ga.py` entero, así que 02 (restaurar el import de `engine2`), 03 (overrides por entorno) y 04 (tests de los operadores viejos) quedan sin objeto. Están pendientes de triaje por el autor. `repo-health/05` sigue siendo válido e independiente; `06` lo absorbe el README nuevo.
 
@@ -22,12 +22,12 @@
 
 ### What's In Progress
 
-- [ ] `protocolo-80-20` fase 1: 01–09 `done`; queda el ticket 10 (`check_data.py`) en `ready-for-agent`, que solo depende de 03.
+- [x] `protocolo-80-20` fase 1: **01–10 `done`**, nada pendiente.
 - [ ] `protocolo-80-20` fase 2: tickets 11–17 en `ready-for-agent`, todos detrás de la fase 1. 11 (capturas flojas del test, 0 h) depende de 08 y va primero; 12 (validación equilibrada por recortes), 13 (punto de inyección de checkpoint, delta 0.00e+00) y 16 (`FINAL_SEEDS`) dependen de 09; 14 (`pretrain.py` SimCLR) de 13; 15 (puerta pareada, ~4,5 h) de 12 y 14; 17 (re-verificar los valores por defecto y entregar el comando de la corrida) de 12, 13, 14 y 16. Cada constante de fase 2 tiene por defecto el comportamiento del 10 Sep.
 
 ### What's Next
 
-1. protocolo-80-20/10 (`check_data.py`): es el único que queda de la fase 1 y el que arregla el import roto que `init.sh` esquiva compilando sin importar.
+1. protocolo-80-20/11 (capturas flojas del test): el primero de la fase 2, 0 h, sin GPU; su bloqueo 08 está `done`.
 2. Triar `repo-health/02,03,04,06` (probablemente `wontfix`: la feature nueva los deja sin objeto; **06 ya está absorbido** por el README que reescribió el ticket 09).
 3. La corrida real es `nohup ./run.sh 22 > out/logs/run_22.log 2>&1 &` (horas en la A100, GPU 1 por defecto). Antes conviene decidir si entra algo de la fase 2 (11–17), porque cambiar constantes después obliga a un número nuevo.
 
@@ -35,7 +35,6 @@
 
 - [ ] **`uv.lock` se ensucia en cada `./init.sh` completo**: el lock registra `select-best-bands` en `0.2.0` y `pyproject.toml` dice `0.1.0`, así que `uv sync` reescribe esa línea y `git status` sale sucio. Preexistente (ticket 01), sin ticket propio todavía; lo he revertido con `git checkout -- uv.lock`. Decisión de Pablo: subir `pyproject.toml` a 0.2.0 o recommitear el lock.
 
-- [ ] `check_data.py` sigue sin importar tras el ticket 03 (`HypercubeDataset` desapareció); lo reescribe el ticket 10. `init.sh` lo compila pero no lo importa, así que la puerta sigue verde. `ga.py` ya está entero y `init.sh` vuelve a importarlo.
 - [ ] `data/` is gitignored; `init.sh` warns instead of failing when it is absent so code-only work is possible on machines without the dataset.
 - [ ] Una corrida por defecto es la población inicial de 20 más 25 generaciones, cada individuo 50 épocas en la A100: horas. Nunca se lanza como «verificación»; para eso está `./run.sh 99 --population 4 --generations 1 --epochs 1`.
 
@@ -50,6 +49,8 @@
 - **Se conserva la derivación exacta de la semilla por candidato**: permite verificar el port reproduciendo bit a bit el resultado del 10 Sep y replicar la búsqueda sin GPU desde los 383 candidatos ya evaluados.
 
 ## Files Modified This Session
+
+- protocolo-80-20/10: `check_data.py` (reescrito entero: `artifact_checksum`, `mismatched_artifacts`, `crops_to_show`, `draw_grid`, `check_command` y el CLI `--manifest/--bands`), `cnn/data_setup.py` (`artifact_path` y `load_partition_crops`, las dos compartidas), `train_final.py` (deja de tener su propia copia de `load_crops`), `config.py` (`SANITY_CHECK_DIR`, `SANITY_CHECK_CROPS_PER_CLASS`, `SANITY_CHECK_BANDS`), `init.sh` (ahora **importa** `check_data`, no solo lo compila), `tests/test_protocol.py` (+9 tests), `README.md` y `CLAUDE.md` (Layout). Nuevo fuera de `out/`: `sanity-check/data_sanity_check.png`. Nada en `out/`.
 
 - protocolo-80-20/09: `run.sh` (reescrito: la cadena de los cuatro pasos, `set -euo pipefail`, `CUDA_VISIBLE_DEVICES` por defecto 1, enrutado de flags por paso, tres logs y sus refusals), `plot_fitness_evolution.py` (reescrito: `read_generations`, `winner_wavelengths`, `plot_command` y CLI por número de experimento; reutiliza `ga.plot_fitness_evolution`), `README.md` (reescrito entero), `CLAUDE.md` (Layout, Invariants y Verification), `ga.py` (`STATS_FIELDS` como constante de módulo), `init.sh` (importa `plot_fitness_evolution`), `tests/test_protocol.py` (+5 tests). Nada nuevo en `out/`: el smoke del 99 se borró y la figura del 21 se reescribió idéntica.
 
@@ -89,6 +90,10 @@
 
 ## Notes for Next Session
 
+- **`sanity-check/` es la única figura fuera de `out/`**, y se versiona: no pertenece a ningún número de experimento porque describe los datos enlazados, no una corrida, y `check_data.py` la reescribe en su sitio. Decidido en el ticket 10 y anotado en `CLAUDE.md`.
+- **Los checksums se verifican en `check_data.py` y en ningún otro sitio** (spec: comprobaciones baratas en cada carga, checksums una vez). Cuesta ~3 min en total: el hash de los 1.124 ficheros más los 868 recortes de train que hacen falta para ajustar la normalización con la que se dibuja la rejilla.
+- **`load_crops` vivía en `train_final.py` y ahora es `cnn.data_setup.load_partition_crops`**, con el manifiesto como parámetro; `check_data.py` la usa con su `--manifest`. El test que espía la apertura del test set parchea `train_final.load_partition_crops`.
+
 - **`run.sh` enruta los flags por paso, no los reenvía a ciegas**: `--population`/`--generations`/`--no-evaluate` van a `ga.py`, `--epochs` a `ga.py` y `train_final.py`, `--bands` a `train_final.py` y `bootstrap.py`, `--resamples`/`--seed` a `bootstrap.py`. Un flag que ningún paso acepta corta la cadena antes de entrenar nada. `ga.py --predictions` no se enruta a propósito: solo lo usa `--evaluate`, que no forma parte de la cadena.
 - **Importar el `plot_fitness_evolution.py` viejo tenía efectos secundarios**: su cuerpo de módulo dibujaba al importarse, así que la primera pasada de pytest reescribió `best_fitness_evolution.png` y creó `number_of_evaluations.png` en la raíz. Restaurados con `git checkout`. El nuevo no hace nada al importarse.
 
@@ -97,8 +102,6 @@
 - **`out/` tiene una regla de propiedad nueva**: `ga.py N` se niega a arrancar si existe `exp_NN_ga_stats.csv` pero no `exp_NN_candidates.csv`, porque ese número es de una corrida que este código no puede reanudar (los experimentos 1–20). Con los dos ficheros es una reanudación y reescribe sus propias salidas finales a propósito.
 
 - **Cargar los recortes cuesta ~2,5 min** (708 en 123 s, 868 en ~150 s): es la descompresión zlib de los NPZ en `load_hypercubes`, es CPU, y fig-aflatoxin paga lo mismo. Por eso el smoke de una época del ticket 04 tarda ~3 min y no «menos de un minuto». Para el ticket 05 da igual: la búsqueda carga una vez y deja los recortes en RAM.
-- **`check_data.py` sigue sin importar** tras el ticket 03 (`HypercubeDataset` desapareció); lo reescribe el ticket 10. `init.sh` lo compila pero no lo importa, así que la puerta sigue verde.
-
 - `cnn/train.py`, `cnn/model_info.py` y `cnn/util/` ya están borrados (protocolo-80-20/01); su contenido sigue en la historia, en `b7f1fc9`.
 - `create_summary_table.py` only reads experiments 1–10 (repo-health/05).
 - **El nm redondeado del ticket 03 era la prosa de la memoria**: los artefactos de la corrida guardan `891.02` y `697.05`. `wavelengths_of` devuelve el valor crudo; redondear, si acaso, al imprimir.

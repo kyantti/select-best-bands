@@ -14,6 +14,7 @@ import pytest
 import torch
 
 import bootstrap
+import check_data
 import config
 import ga
 import plot_fitness_evolution
@@ -27,6 +28,7 @@ from cnn.data_setup import (
     fit_foreground_normalization,
     load_hypercubes,
     load_manifest,
+    load_partition_crops,
     load_partitions,
     load_spectral_axis,
     prepare_model_input,
@@ -974,13 +976,13 @@ def test_final_saves_the_model_before_the_test_set_is_opened(final_dataset, monk
     """The claim of the whole script: no held-out crop is read until the model is frozen."""
     model_path = train_final.final_paths(21, FINAL_BANDS)["model"]
     opened = []
-    load_crops = train_final.load_crops
+    load_crops = train_final.load_partition_crops
 
-    def watched(partition, wavelengths, *, verbose):
+    def watched(manifest_path, partition, wavelengths, *, verbose):
         opened.append((partition, model_path.exists()))
-        return load_crops(partition, wavelengths, verbose=verbose)
+        return load_crops(manifest_path, partition, wavelengths, verbose=verbose)
 
-    monkeypatch.setattr(train_final, "load_crops", watched)
+    monkeypatch.setattr(train_final, "load_partition_crops", watched)
     evaluated = []
 
     run_final(evaluator=lambda context: (evaluated.append(model_path.exists()), [0, 3])[1])
@@ -1412,3 +1414,164 @@ def test_plot_says_which_file_an_unsearched_experiment_is_missing(searched_exper
         plot_fitness_evolution.plot_command(22, verbose=False)
 
     assert plot_fitness_evolution.main(["22"]) == 1
+
+
+# --- Verifying the linked crops once ----------------------------------------
+
+
+SANITY_WAVELENGTHS = [400.0, 450.0, 500.0, 550.0, 600.0]  # one per band of `crop`
+SANITY_BANDS = (4, 1, 2)
+
+
+def sanity_argv(*extra):
+    """The command line of a check whose bands are inside the tiny axis."""
+    return [*extra, "--bands", *(str(band) for band in SANITY_BANDS)]
+
+
+def rewrite_checksums(manifest):
+    """Put each artifact's real SHA-256 in the manifest that names it."""
+    rows = list(csv.DictReader(manifest.open(newline="")))
+    for row in rows:
+        artifact = manifest.parent / row["artifact_relative_path"]
+        row["artifact_checksum"] = check_data.artifact_checksum(artifact)
+    with manifest.open("w", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=CROPPED_HYPERCUBE_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return rows
+
+
+@pytest.fixture
+def sanity_dataset(tmp_path, monkeypatch):
+    """Three train crops of every class and one held-out crop, checksums recorded."""
+    axis = write_spectral_axes(tmp_path, SANITY_WAVELENGTHS)
+    crops = [
+        (
+            f"{severity.lower()}-{index}",
+            f"acq-{severity.lower()}-{'val' if index == 2 else 'fit'}",
+            severity,
+            crop(value),
+        )
+        for severity, values in (
+            ("C0", (0.11, 0.12, 0.13)),
+            ("C1", (0.21, 0.22, 0.23)),
+            ("C2", (0.31, 0.32, 0.33)),
+            ("C3", (0.41, 0.42, 0.43)),
+        )
+        for index, value in enumerate(values)
+    ]
+    crops.append(("test-a", "acq-test", "C3", crop(0.9)))
+    manifest = write_dataset(tmp_path, crops, axis_id=spectral_axis_id(SANITY_WAVELENGTHS))
+    rewrite_checksums(manifest)
+    partitions = write_partitions(
+        tmp_path,
+        [
+            partition_row(
+                identity,
+                acquisition,
+                severity,
+                "train",
+                "validation" if acquisition.endswith("-val") else "train",
+            )
+            for identity, acquisition, severity, _ in crops[:-1]
+        ]
+        + [partition_row("test-a", "acq-test", "C3", "test", "")],
+    )
+    for name, value in (
+        ("HYPERCUBES_MANIFEST", manifest),
+        ("SPECTRAL_AXES", axis),
+        ("PARTITIONS", partitions),
+        ("SANITY_CHECK_DIR", tmp_path / "sanity-check"),
+    ):
+        monkeypatch.setattr(config, name, value)
+    return tmp_path
+
+
+def corrupt(manifest, identity):
+    """Overwrite one artifact with a different, still valid, crop."""
+    reflectance, mask = crop(0.55)
+    np.savez_compressed(
+        manifest.parent / "cropped_hypercubes" / f"{identity}.npz",
+        reflectance=reflectance,
+        foreground_mask=mask,
+    )
+
+
+def test_check_data_reports_no_mismatch_when_every_artifact_hashes_as_recorded(sanity_dataset):
+    manifest = config.HYPERCUBES_MANIFEST
+
+    assert check_data.mismatched_artifacts(manifest, load_manifest(manifest)) == []
+
+
+def test_check_data_names_the_crop_whose_artifact_changed(sanity_dataset):
+    manifest = config.HYPERCUBES_MANIFEST
+    corrupt(manifest, "c2-1")
+
+    assert check_data.mismatched_artifacts(manifest, load_manifest(manifest)) == ["c2-1"]
+
+
+def test_check_data_counts_an_artifact_that_is_not_there_as_a_mismatch(sanity_dataset):
+    manifest = config.HYPERCUBES_MANIFEST
+    (manifest.parent / "cropped_hypercubes" / "c0-0.npz").unlink()
+
+    assert check_data.mismatched_artifacts(manifest, load_manifest(manifest)) == ["c0-0"]
+
+
+def test_check_data_draws_only_from_train_crops(sanity_dataset):
+    crops = load_partition_crops(
+        config.HYPERCUBES_MANIFEST, "train", SANITY_WAVELENGTHS, verbose=False
+    )
+
+    assert [hypercube.cropped_hypercube_id for hypercube in crops] == [
+        f"{severity.lower()}-{index}"
+        for severity in config.CLASS_NAMES
+        for index in range(3)
+    ]
+
+
+def test_check_data_shows_the_same_number_of_crops_from_every_class(sanity_dataset):
+    crops = load_partition_crops(
+        config.HYPERCUBES_MANIFEST, "train", SANITY_WAVELENGTHS, verbose=False
+    )
+
+    shown = check_data.crops_to_show(crops, 2)
+
+    assert [hypercube.severity_class for hypercube in shown] == [0, 0, 1, 1, 2, 2, 3, 3]
+
+
+def test_check_data_refuses_to_draw_a_class_it_has_too_few_crops_of(sanity_dataset):
+    crops = load_partition_crops(
+        config.HYPERCUBES_MANIFEST, "train", SANITY_WAVELENGTHS, verbose=False
+    )
+
+    with pytest.raises(ValueError, match="C0"):
+        check_data.crops_to_show(crops[:1], 2)
+
+
+def test_check_data_writes_the_grid_and_says_nothing_mismatched(sanity_dataset, capsys):
+    exit_code = check_data.main(sanity_argv())
+
+    assert exit_code == 0
+    assert "13 files, 0 checksum mismatches" in capsys.readouterr().out
+    assert (config.SANITY_CHECK_DIR / "data_sanity_check.png").exists()
+
+
+def test_check_data_stops_before_the_figure_when_an_artifact_does_not_match(
+    sanity_dataset, capsys
+):
+    corrupt(config.HYPERCUBES_MANIFEST, "c1-2")
+
+    exit_code = check_data.main(sanity_argv())
+
+    assert exit_code == 1
+    assert "13 files, 1 checksum mismatch" in capsys.readouterr().out
+    assert not (config.SANITY_CHECK_DIR / "data_sanity_check.png").exists()
+
+
+def test_check_data_verifies_the_manifest_it_is_given(sanity_dataset, tmp_path, capsys):
+    elsewhere = config.HYPERCUBES_MANIFEST.rename(tmp_path / "another_manifest.csv")
+
+    exit_code = check_data.main(sanity_argv("--manifest", str(elsewhere)))
+
+    assert exit_code == 0
+    assert "13 files, 0 checksum mismatches" in capsys.readouterr().out

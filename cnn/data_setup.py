@@ -314,6 +314,26 @@ def read_npz(path) -> tuple[np.ndarray, np.ndarray]:
     return reflectance, foreground_mask
 
 
+def artifact_path(manifest_path, entry: dict[str, str]) -> Path:
+    """Where one manifest row's NPZ lives, relative to the manifest itself.
+
+    The only place a manifest's `artifact_relative_path` is turned into a path,
+    so the checks that keep a hand-edited manifest from reaching outside the
+    dataset directory are written once.  `check_data.py` hashes what this
+    returns; `load_hypercubes` reads it.
+
+    Raises:
+        ValueError: If the recorded path is absolute, climbs out of the
+            dataset directory, or is not a POSIX path.
+    """
+    relative = PurePosixPath(entry["artifact_relative_path"])
+    if relative.is_absolute() or ".." in relative.parts or "\\" in str(relative):
+        raise ValueError(
+            f"invalid artifact path for CroppedHypercube '{entry['cropped_hypercube_id']}'"
+        )
+    return Path(manifest_path).parent.joinpath(*relative.parts)
+
+
 def load_hypercubes(manifest_path, rows: list[dict[str, str]], *, verbose=True) -> list[Hypercube]:
     """Load into RAM the crops named by `rows`, in the order of the manifest.
 
@@ -340,11 +360,8 @@ def load_hypercubes(manifest_path, rows: list[dict[str, str]], *, verbose=True) 
             expected_shape = (int(entry["height"]), int(entry["width"]), int(entry["band_count"]))
         except ValueError as exc:
             raise ValueError(f"invalid metadata for CroppedHypercube '{identity}'") from exc
-        relative = PurePosixPath(entry["artifact_relative_path"])
-        if relative.is_absolute() or ".." in relative.parts or "\\" in str(relative):
-            raise ValueError(f"invalid artifact path for CroppedHypercube '{identity}'")
         try:
-            reflectance, foreground_mask = read_npz(manifest_path.parent.joinpath(*relative.parts))
+            reflectance, foreground_mask = read_npz(artifact_path(manifest_path, entry))
         except ValueError as exc:
             raise ValueError(f"invalid CroppedHypercube '{identity}': {exc}") from exc
         if reflectance.shape != expected_shape:
@@ -377,6 +394,28 @@ def load_hypercubes(manifest_path, rows: list[dict[str, str]], *, verbose=True) 
     if verbose and len(hypercubes) % 100 != 0:
         print(f"  loaded {len(hypercubes)}/{len(requested)} hypercubes")
     return hypercubes
+
+
+def load_partition_crops(
+    manifest_path, partition: str, wavelengths: list[float], *, verbose: bool
+) -> list[Hypercube]:
+    """Load the crops of one evaluation partition, in manifest order.
+
+    `partition` is "train" — all 28 Acquisitions, the inner validation split
+    included — or "test".  Asking for one never reads an artifact of the other,
+    because the rows of the other are dropped before a single NPZ is opened.
+
+    Raises:
+        ValueError: If the crops were cut against another SpectralAxis.
+    """
+    rows = [row for row in load_partitions(config.PARTITIONS) if row["partition"] == partition]
+    if verbose:
+        print(f"loading {len(rows)} {partition} crops")
+    crops = load_hypercubes(manifest_path, rows, verbose=verbose)
+    if {hypercube.spectral_axis_id for hypercube in crops} != {spectral_axis_id(wavelengths)}:
+        raise ValueError(f"{partition} crops were cut against another SpectralAxis")
+    return crops
+
 
 
 # --- Normalization and model input -----------------------------------------

@@ -21,9 +21,11 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 - `cnn/engine.py`, `cnn/data_setup.py`, `cnn/model.py` – training loops, the data path (manifest, partition, NPZ, normalization, dataset), and the ResNet50 contract (data identity, per-candidate seed, metrics, `evaluate_candidate`).
 - `run.sh <experiment_number> [flags]` – the whole chain for one number: `split_dataset.py` → `ga.py N` → `train_final.py N` → `bootstrap.py N`, logging to `out/logs/experiment_N.log`, `final_N.log` and `bootstrap_N.log`, with `CUDA_VISIBLE_DEVICES` defaulting to GPU 1. Flags after the number are routed to the steps that take them (`--population`/`--generations`/`--no-evaluate` to `ga.py`, `--epochs` to `ga.py` and `train_final.py`, `--bands` to `train_final.py` and `bootstrap.py`, `--resamples`/`--seed` to `bootstrap.py`), so a smoke chain is one command.
 - `plot_fitness_evolution.py <experiment_number>` – redraws `exp_NN_fitness_evolution.png` from `exp_NN_ga_stats.csv` and `exp_NN_ga_summary.json` alone, byte for byte what the search drew. No GPU, no crops.
-- `check_data.py`, `create_summary_table.py` – post-hoc utilities of the earlier protocol (`create_summary_table.py` reads experiments 1–10 only).
+- `check_data.py` – the one-off verification of the linked data: hashes the 1124 NPZ crops against the `artifact_checksum` of the manifest and, when they all match, writes `sanity-check/data_sanity_check.png` with two train crops per class drawn through the same preparation the network sees. No GPU, nothing under `out/`. Checksums are verified here and nowhere else.
+- `create_summary_table.py` – post-hoc utility of the earlier protocol (reads experiments 1–10 only).
 - `data/` – gitignored: `cropped_hypercubes/` (symlink to the 1124 NPZ crops), `cropped_hypercubes.csv`, `spectral_axes.csv`, `evaluation_partitions.csv`.
 - `out/tables`, `out/figures`, `out/logs` – experiment results. **Tracked in git and part of the thesis record.**
+- `sanity-check/data_sanity_check.png` – the one figure outside `out/`: it belongs to no experiment number, because it describes the linked data rather than a run. Tracked in git and rewritten in place by `check_data.py`.
 - `tests/test_protocol.py` – the protocol tests (no GPU, no `data/`); `tests/data/*.csv` are the versioned reference manifests they check against.
 - `.scratch/<feature>/` – issue tracker: `spec.md` plus one markdown ticket per `issues/NN-*.md`. Tracked in git.
 

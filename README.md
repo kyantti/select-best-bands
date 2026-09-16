@@ -64,7 +64,7 @@ select-best-bands/
 │   ├── data_setup.py        # manifest, partition, NPZ, normalization, dataset
 │   ├── engine.py            # the training and evaluation loops
 │   └── model.py             # ResNet50, data identity, seeds, metrics
-├── check_data.py            # data sanity checks
+├── check_data.py            # NPZ checksums, once, and the per-class crop grid
 ├── create_summary_table.py  # summary of experiments 1–10 (v1 tool)
 ├── plot_fitness_evolution.py# redraws exp_NN_fitness_evolution.png from the tables
 ├── data/                    # gitignored
@@ -75,6 +75,7 @@ select-best-bands/
 ├── out/                     # the experiment record, tracked in git
 │   ├── tables/  figures/  logs/
 │   └── models/              # the .pt checkpoints, gitignored (91 MB each)
+├── sanity-check/            # data_sanity_check.png, written by check_data.py
 ├── tests/test_protocol.py   # the protocol tests: no GPU, no data/
 ├── init.sh                  # the verification gate
 └── pyproject.toml           # pinned dependencies

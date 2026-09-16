@@ -78,3 +78,14 @@ BOOTSTRAP_SEED = 1729  # the same number as CANDIDATE_SEED in the real run, on p
 BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
 # The two tails of that level, in the percent `numpy.percentile` wants.
 BOOTSTRAP_PERCENTILES = (2.5, 97.5)
+
+# --- Data sanity check ----------------------------------------------------
+# `check_data.py` alone: a one-off verification and a figure, never a result.
+SANITY_CHECK_DIR = ROOT / "sanity-check"
+SANITY_CHECK_CROPS_PER_CLASS = 2
+# A copy of the published winner, so that the bare command draws the three
+# channels the reported model was trained on.  The authority on which triplet a
+# search chose is its own `exp_NN_ga_summary.json`, which is where
+# `train_final.py` reads it from; this is a display default and nothing reads a
+# result through it.  `check_data.py --bands R G B` overrides it.
+SANITY_CHECK_BANDS = (366, 262, 225)
