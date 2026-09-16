@@ -1,0 +1,45 @@
+{
+  "fitness": {
+    "band_count": 448,
+    "batch_size": 32,
+    "candidate_seed": 1729,
+    "data_identity": {
+      "spectral_axis": "608f9d5f3a83169a1cba423fd43c5a85326fa03d8292d5c4fcd9409e17c0c1af",
+      "train_cropped_hypercubes": "f69c27438904ebe4012b853e248d8b6888a11d92ec8cc092ac0d23afa314234b",
+      "train_evaluation_assignments": "6a3df7838601815f1b309fb28d22d7b44db8a8756b5456a5407e7bac7bb0e01c",
+      "validation_cropped_hypercubes": "a01d46e96f54778db61948ba0c5dabd810089047181ff598fa486ef7c9bc02ee"
+    },
+    "device_type": "cuda",
+    "epochs": 50,
+    "image_size": [
+      64,
+      128
+    ],
+    "learning_rate": 0.001,
+    "libraries": {
+      "deap": "1.4.4",
+      "numpy": "2.5.1",
+      "scikit-learn": "1.9.0",
+      "torch": "2.13.0+cu126",
+      "torchvision": "0.28.0+cu126"
+    },
+    "num_workers": 8,
+    "partition_seed": 20230717,
+    "resnet50_weights": "ResNet50_Weights.IMAGENET1K_V2",
+    "seed_policy": "sha256-candidate-split-v1",
+    "test_proportion": 0.2,
+    "validation_proportion": 0.2
+  },
+  "ga": {
+    "blend_alpha": 0.5,
+    "crossover_probability": 0.8,
+    "gene_mutation_probability": 0.3,
+    "generations": 25,
+    "mutation_mu": 0.0,
+    "mutation_probability": 0.15,
+    "mutation_sigma": 20.0,
+    "population_size": 20,
+    "tournament_size": 3
+  },
+  "schema_version": 1
+}

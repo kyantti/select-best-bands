@@ -1,0 +1,37 @@
+{
+  "cache": {
+    "evaluations": 0,
+    "hits": 451,
+    "restored": 383,
+    "unique_candidates": 383
+  },
+  "elapsed_seconds": 0.01089058630168438,
+  "experiment": 21,
+  "libraries": {
+    "deap": "1.4.4",
+    "numpy": "2.5.1",
+    "scikit-learn": "1.9.0",
+    "torch": "2.13.0+cu126",
+    "torchvision": "0.28.0+cu126"
+  },
+  "primary_metric": "weighted_f1",
+  "schema_version": 1,
+  "study_seed": 23,
+  "winner": {
+    "candidate_seed": 3104252108,
+    "macro_f1": 0.8763610130071496,
+    "ordinal_mae": 0.1875,
+    "quadratic_weighted_kappa": 0.8711063372717508,
+    "selected_band_indices": [
+      366,
+      262,
+      225
+    ],
+    "selected_wavelengths_nm": [
+      891.02,
+      747.5,
+      697.05
+    ],
+    "weighted_f1": 0.8700979843225085
+  }
+}
