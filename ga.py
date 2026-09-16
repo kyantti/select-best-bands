@@ -44,6 +44,8 @@ from cnn.model import (
     RESNET50_WEIGHTS,
     SEED_POLICY,
     candidate_seed,
+    checkpoint_identity,
+    checkpoint_path,
     data_identity,
     evaluate_candidate,
 )
@@ -639,14 +641,22 @@ def write_predictions(
             )
 
 
-def evaluate_command(bands, *, epochs: int, predictions_path: Path | None) -> None:
+def evaluate_command(
+    bands, *, epochs: int, predictions_path: Path | None, checkpoint: Path | None = None
+) -> None:
     """Train one triplet on the train-fit crops and report its validation metrics.
 
     Raises:
+    `checkpoint` is resolved here rather than taken as given, so that the
+    constant applies to every caller and not only to the command line.
+
+    Raises:
+        ValueError: If a checkpoint was asked for and is not there.
         FileExistsError: If the predictions file is already there.  Checked
             before anything is loaded, so an hour of training is never spent on
             a result that cannot be written down.
     """
+    checkpoint = checkpoint_path(checkpoint)
     if predictions_path is None:
         r, g, b = (int(band) for band in bands)
         predictions_path = config.TABLES_DIR / f"evaluate_{r}_{g}_{b}_validation_predictions.csv"
@@ -663,6 +673,8 @@ def evaluate_command(bands, *, epochs: int, predictions_path: Path | None) -> No
     print("wavelengths_nm " + ", ".join(f"{value}" for value in nanometres))
     print(f"candidate seed {derived_seed}")
     print(f"device         {device}  |  epochs {epochs}")
+    if checkpoint is not None:
+        print_checkpoint(checkpoint)
 
     started = time.perf_counter()
     predictions, metrics, (mean, std) = evaluate_candidate(
@@ -671,6 +683,7 @@ def evaluate_command(bands, *, epochs: int, predictions_path: Path | None) -> No
         validation,
         seed=derived_seed,
         device=device,
+        checkpoint=checkpoint,
         epochs=epochs,
     )
     elapsed = time.perf_counter() - started
@@ -693,13 +706,24 @@ def library_versions() -> dict[str, str]:
     return {name: version(name) for name in LIBRARIES}
 
 
-def fitness_contract(identity: dict[str, str], band_count: int, device, *, epochs: int) -> dict:
+def fitness_contract(
+    identity: dict[str, str],
+    band_count: int,
+    device,
+    *,
+    epochs: int,
+    checkpoint: Path | None = None,
+) -> dict:
     """Everything a cached fitness depends on, so another run cannot reuse it blindly.
 
     If any of this changes, the numbers already in the CSV were produced by a
     different experiment and the two cannot be mixed.
+
+    A backbone checkpoint enters the contract only when there is one: a run
+    without one is the run this protocol was recorded under, so its contract is
+    the one the caches already on disk were written with, unchanged.
     """
-    return {
+    contract = {
         "candidate_seed": config.CANDIDATE_SEED,
         "seed_policy": SEED_POLICY,
         "epochs": epochs,
@@ -716,16 +740,25 @@ def fitness_contract(identity: dict[str, str], band_count: int, device, *, epoch
         "libraries": library_versions(),
         "resnet50_weights": str(RESNET50_WEIGHTS),
     }
+    if checkpoint is not None:
+        contract["backbone_checkpoint"] = checkpoint_identity(checkpoint)
+    return contract
 
 
-def make_evaluator(training, validation, identity, device, *, epochs: int):
+def make_evaluator(training, validation, identity, device, *, epochs: int, checkpoint=None):
     """Wrap `evaluate_candidate` so the search trains one triplet and reports it."""
 
     def evaluate(candidate: Candidate) -> CandidateFitness:
         seed = candidate_seed(candidate, identity)
         started = time.perf_counter()
         _, metrics, _ = evaluate_candidate(
-            candidate, training, validation, seed=seed, device=device, epochs=epochs
+            candidate,
+            training,
+            validation,
+            seed=seed,
+            device=device,
+            checkpoint=checkpoint,
+            epochs=epochs,
         )
         print(
             f"  {candidate} seed {seed} weighted_f1 {metrics['weighted_f1']:.6f} "
@@ -752,6 +785,17 @@ def experiment_paths(experiment: int) -> dict[str, Path]:
         "summary": config.TABLES_DIR / f"{prefix}_ga_summary.json",
         "figure": config.FIGURES_DIR / f"{prefix}_fitness_evolution.png",
     }
+
+
+def print_checkpoint(checkpoint: Path) -> None:
+    """Say which backbone a run was given, and by which bytes.
+
+    Both the search and the final model print it the same way, because the
+    checkpoint is what makes their two numbers comparable or not.
+    """
+    identity = checkpoint_identity(checkpoint)
+    print(f"checkpoint     {identity['path']}")
+    print(f"checkpoint sha {identity['sha256']}")
 
 
 def band_suffix(bands) -> str:
@@ -907,8 +951,16 @@ def search_command(
     generations: int,
     epochs: int,
     evaluate: bool,
+    checkpoint: Path | None = None,
 ) -> None:
-    """Run, or replay, the search of one experiment number."""
+    """Run, or replay, the search of one experiment number.
+
+    Raises:
+        ValueError: If a checkpoint was asked for and is not there, if the
+            number belongs to an earlier protocol, or if the cache on disk was
+            written under another fitness contract.
+    """
+    checkpoint = checkpoint_path(checkpoint)
     paths = experiment_paths(experiment)
     prefix = experiment_prefix(experiment)
     refuse_to_reuse_an_old_experiment_number(paths, prefix)
@@ -921,11 +973,15 @@ def search_command(
         paths["config"],
         identity=identity,
         wavelengths=wavelengths,
-        fitness_contract=fitness_contract(identity, band_count, device, epochs=epochs),
+        fitness_contract=fitness_contract(
+            identity, band_count, device, epochs=epochs, checkpoint=checkpoint
+        ),
         ga_parameters=params.as_dict(),
     )
     evaluator = (
-        make_evaluator(training, validation, identity, device, epochs=epochs)
+        make_evaluator(
+            training, validation, identity, device, epochs=epochs, checkpoint=checkpoint
+        )
         if evaluate
         else refuse_to_evaluate
     )
@@ -1022,6 +1078,12 @@ def main(argv=None) -> int:
         help="replay from the cache alone: any candidate that is not in it is an error",
     )
     parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="a pretrained backbone to fine-tune from; the default is"
+        " config.BACKBONE_CHECKPOINT, and a checkpoint is part of the fitness contract",
+    )
+    parser.add_argument(
         "--predictions",
         type=Path,
         help="where to write the validation predictions; the default is under out/tables/"
@@ -1042,6 +1104,7 @@ def main(argv=None) -> int:
                 tuple(arguments.evaluate),
                 epochs=arguments.epochs,
                 predictions_path=arguments.predictions,
+                checkpoint=arguments.checkpoint,
             )
         else:
             search_command(
@@ -1050,6 +1113,7 @@ def main(argv=None) -> int:
                 generations=arguments.generations,
                 epochs=arguments.epochs,
                 evaluate=not arguments.no_evaluate,
+                checkpoint=arguments.checkpoint,
             )
     except (ValueError, LookupError, FileExistsError) as refusal:
         print(f"ga.py: {refusal}", file=sys.stderr)

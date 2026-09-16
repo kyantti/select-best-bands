@@ -6,6 +6,7 @@ of it is written.
 """
 
 import csv
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -13,11 +14,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import torchvision
 from sklearn.model_selection import train_test_split
 
 import analyze_test_errors
 import bootstrap
 import check_data
+import cnn.model
 import config
 import ga
 import plot_fitness_evolution
@@ -38,7 +41,14 @@ from cnn.data_setup import (
     spectral_axis_id,
     wavelengths_of,
 )
-from cnn.model import candidate_seed, classification_metrics, data_identity
+from cnn.model import (
+    build_resnet50,
+    candidate_seed,
+    checkpoint_identity,
+    checkpoint_path,
+    classification_metrics,
+    data_identity,
+)
 from split_dataset import assign_partitions, held_out_size, measure_balance, summarize
 
 BANDS = 5
@@ -1096,12 +1106,15 @@ def fake_final_model(epochs=2):
     )
 
 
-def run_final(experiment=21, bands=FINAL_BANDS, *, trainer=None, evaluator=None, epochs=2):
+def run_final(
+    experiment=21, bands=FINAL_BANDS, *, trainer=None, evaluator=None, epochs=2, checkpoint=None
+):
     """One final-model run whose training and inference are replaced by fakes."""
     return train_final.final_command(
         experiment,
         bands=bands,
         epochs=epochs,
+        checkpoint=checkpoint,
         trainer=trainer if trainer is not None else lambda context: fake_final_model(epochs),
         evaluator=evaluator if evaluator is not None else (lambda context: [0, 3]),
         verbose=False,
@@ -1974,3 +1987,260 @@ def test_error_analysis_says_where_the_extreme_confusions_fell():
 def test_error_analysis_refuses_to_report_an_acquisition_it_could_not_measure():
     with pytest.raises(ValueError, match="no crop of acquisition acq-d"):
         analyze_test_errors.analysis_rows(error_predictions(), {}, ERROR_BANDS)
+
+
+# --- The optional backbone checkpoint ---------------------------------------
+# The injection point of ticket 13.  What these watch is that an unset
+# checkpoint is not a code path at all — the model, and the randomness the
+# model's head is drawn from, are the ones the 10 Sep run recorded — and that a
+# checkpoint, once set, can neither be loaded in part nor mixed into a cache
+# that was filled without it.
+
+
+@pytest.fixture(scope="module")
+def backbone_state():
+    """A ResNet50 backbone's parameters, head excluded, as a checkpoint holds them."""
+    return {
+        name: value
+        for name, value in torchvision.models.resnet50().state_dict().items()
+        if not name.startswith(cnn.model.HEAD_PREFIX)
+    }
+
+
+def write_checkpoint(path, state):
+    """Save a state dict where `build_resnet50` can be pointed at it."""
+    torch.save(state, path)
+    return path
+
+
+def model_built_before_the_injection_point(device):
+    """The model as `cnn/model.py` built it before this ticket, copied by hand.
+
+    A freshly written reference, not a call into the code under test: what it
+    is here to catch is the code under test drifting away from it.
+    """
+    reference = torchvision.models.resnet50(weights=cnn.model.RESNET50_WEIGHTS)
+    for parameter in reference.parameters():
+        parameter.requires_grad = False
+    for parameter in reference.layer4.parameters():
+        parameter.requires_grad = True
+    reference.fc = torch.nn.Linear(reference.fc.in_features, config.NUM_CLASSES, bias=True)
+    return reference.to(device)
+
+
+def test_checkpoint_is_unset_by_default():
+    assert config.BACKBONE_CHECKPOINT is None
+
+
+def test_checkpoint_unset_leaves_the_model_and_the_random_stream_untouched():
+    """The delta-zero guarantee: with no checkpoint, nothing about the build moved."""
+    cpu = torch.device("cpu")
+    torch.manual_seed(13)
+    built = build_resnet50(cpu)
+    after_build = torch.rand(4)
+    torch.manual_seed(13)
+    reference = model_built_before_the_injection_point(cpu)
+    after_reference = torch.rand(4)
+
+    state, recorded = built.state_dict(), reference.state_dict()
+    assert list(state) == list(recorded)
+    assert all(torch.equal(state[name], recorded[name]) for name in recorded)
+    assert [parameter.requires_grad for parameter in built.parameters()] == [
+        parameter.requires_grad for parameter in reference.parameters()
+    ]
+    # The head is drawn from the torch generator: the same four numbers after
+    # both builds means the injection point consumed no randomness of its own.
+    assert torch.equal(after_build, after_reference)
+
+
+def test_checkpoint_replaces_the_backbone_and_leaves_the_head_fresh(tmp_path, backbone_state):
+    path = write_checkpoint(tmp_path / "pretrain.pt", backbone_state)
+
+    model = build_resnet50(torch.device("cpu"), path)
+
+    state = model.state_dict()
+    assert all(torch.equal(state[name], value) for name, value in backbone_state.items())
+    # Not vacuous: those are not the ImageNet weights the model was created with.
+    assert not torch.equal(
+        state["conv1.weight"], build_resnet50(torch.device("cpu")).state_dict()["conv1.weight"]
+    )
+    # The head is this experiment's four classes, never the checkpoint's.
+    assert state["fc.weight"].shape == (config.NUM_CLASSES, 2048)
+    assert model.fc.weight.requires_grad
+    assert not model.conv1.weight.requires_grad
+
+
+@pytest.mark.parametrize(
+    "damage,message",
+    [
+        (lambda state: {name: value for name, value in state.items() if name != "conv1.weight"},
+         "conv1.weight"),
+        (lambda state: {**state, "invented.weight": torch.zeros(2)}, "invented.weight"),
+        (lambda state: {**state, "conv1.weight": torch.zeros(7, 7)}, "conv1.weight"),
+    ],
+    ids=["missing", "unexpected", "reshaped"],
+)
+def test_checkpoint_that_is_not_the_backbone_is_refused(tmp_path, backbone_state, damage, message):
+    path = write_checkpoint(tmp_path / "damaged.pt", damage(backbone_state))
+
+    with pytest.raises(ValueError, match=message):
+        build_resnet50(torch.device("cpu"), path)
+
+
+def test_checkpoint_that_holds_no_state_dict_is_refused(tmp_path):
+    path = write_checkpoint(tmp_path / "not-a-model.pt", {"epochs": 3})
+
+    with pytest.raises(ValueError, match="state dict"):
+        build_resnet50(torch.device("cpu"), path)
+
+
+def test_checkpoint_head_in_the_file_is_never_loaded(tmp_path, backbone_state):
+    """A checkpoint that carries a head is still only a backbone to this code."""
+    path = write_checkpoint(
+        tmp_path / "with-a-head.pt",
+        {**backbone_state, "fc.weight": torch.zeros(1000, 2048), "fc.bias": torch.zeros(1000)},
+    )
+
+    model = build_resnet50(torch.device("cpu"), path)
+
+    assert model.fc.weight.shape == (config.NUM_CLASSES, 2048)
+    assert not torch.equal(model.fc.weight, torch.zeros(config.NUM_CLASSES, 2048))
+
+
+def test_checkpoint_identity_is_the_path_and_the_hash_of_its_bytes(tmp_path):
+    path = tmp_path / "pretrain.pt"
+    path.write_bytes(b"weights")
+    twin = tmp_path / "a-copy.pt"
+    twin.write_bytes(b"weights")
+
+    identity = checkpoint_identity(path)
+
+    assert checkpoint_identity(None) is None
+    assert identity["sha256"] == hashlib.sha256(b"weights").hexdigest()
+    assert identity["path"] == str(path.resolve())
+    # Same bytes under another name is another checkpoint: the record says which
+    # file the run was given, not only what was in it.
+    assert checkpoint_identity(twin) != identity
+    assert checkpoint_identity(twin)["sha256"] == identity["sha256"]
+
+
+def test_checkpoint_identity_names_a_repository_file_relative_to_the_repository():
+    identity = checkpoint_identity(config.ROOT / "tests" / "data" / "reference_spectral_axes.csv")
+
+    assert identity["path"] == "tests/data/reference_spectral_axes.csv"
+
+
+def test_checkpoint_override_wins_over_the_constant(tmp_path, monkeypatch):
+    constant = tmp_path / "from-config.pt"
+    constant.write_bytes(b"weights")
+    override = tmp_path / "from-the-flag.pt"
+    override.write_bytes(b"other weights")
+    monkeypatch.setattr(config, "BACKBONE_CHECKPOINT", constant)
+
+    assert checkpoint_path(None) == constant
+    assert checkpoint_path(override) == override
+    monkeypatch.setattr(config, "BACKBONE_CHECKPOINT", None)
+    assert checkpoint_path(None) is None
+
+
+def test_checkpoint_that_is_not_there_is_refused_before_anything_is_loaded(tmp_path):
+    with pytest.raises(ValueError, match="absent.pt"):
+        checkpoint_path(tmp_path / "absent.pt")
+
+
+def test_checkpoint_joins_the_fitness_contract_and_is_absent_without_one(tmp_path):
+    path = tmp_path / "pretrain.pt"
+    path.write_bytes(b"weights")
+    cpu = torch.device("cpu")
+
+    without = ga.fitness_contract(GA_IDENTITY, GA_BANDS, cpu, epochs=1)
+    with_one = ga.fitness_contract(GA_IDENTITY, GA_BANDS, cpu, epochs=1, checkpoint=path)
+
+    # Absent, not null: a contract that carried the key as null would refuse the
+    # caches written before this ticket, which describe the same fitness.
+    assert "backbone_checkpoint" not in without
+    assert with_one["backbone_checkpoint"] == checkpoint_identity(path)
+    assert {name: value for name, value in with_one.items() if name != "backbone_checkpoint"} == without
+
+
+def test_checkpoint_cache_filled_without_one_is_refused_when_reloaded_with_one(tmp_path):
+    path = tmp_path / "pretrain.pt"
+    path.write_bytes(b"weights")
+    cpu = torch.device("cpu")
+    make_cache(tmp_path, contract=ga.fitness_contract(GA_IDENTITY, GA_BANDS, cpu, epochs=1))
+
+    with pytest.raises(ValueError, match="backbone_checkpoint"):
+        make_cache(
+            tmp_path,
+            contract=ga.fitness_contract(GA_IDENTITY, GA_BANDS, cpu, epochs=1, checkpoint=path),
+        )
+
+
+def test_checkpoint_does_not_change_the_seed_a_cache_row_records(tmp_path):
+    path = tmp_path / "pretrain.pt"
+    path.write_bytes(b"weights")
+    cache = make_cache(
+        tmp_path,
+        contract=ga.fitness_contract(
+            GA_IDENTITY, GA_BANDS, torch.device("cpu"), epochs=1, checkpoint=path
+        ),
+    )
+
+    cache.append((1, 2, 3), fake_fitness((1, 2, 3)), first_generation=0, seconds=1.0)
+
+    (row,) = list(csv.DictReader((tmp_path / "candidates.csv").open()))
+    # A checkpoint is part of the fitness contract, not of the seed derivation.
+    assert int(row["candidate_seed"]) == ga.candidate_seed((1, 2, 3), GA_IDENTITY)
+
+
+def test_checkpoint_reaches_the_final_model_and_the_settings_it_is_recorded_under(
+    final_dataset, tmp_path
+):
+    path = tmp_path / "pretrain.pt"
+    path.write_bytes(b"weights")
+    trained = []
+
+    run_final(
+        experiment=99,
+        checkpoint=path,
+        trainer=lambda context: (trained.append(context), fake_final_model())[1],
+    )
+
+    assert trained[0].checkpoint == path
+    metrics = json.loads(train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text())
+    assert metrics["backbone_checkpoint"] == checkpoint_identity(path)
+
+
+def test_checkpoint_absent_from_a_final_model_that_was_not_given_one(final_dataset):
+    run_final(experiment=99)
+
+    metrics = json.loads(train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text())
+    assert "backbone_checkpoint" not in metrics
+
+
+def test_checkpoint_refuses_to_rewrite_a_final_result_that_was_trained_without_one(
+    final_dataset, tmp_path
+):
+    path = tmp_path / "pretrain.pt"
+    path.write_bytes(b"weights")
+    run_final(experiment=99)
+    recorded = train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text()
+
+    with pytest.raises(ValueError, match="backbone_checkpoint"):
+        run_final(experiment=99, checkpoint=path)
+
+    assert train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text() == recorded
+
+
+def test_checkpoint_constant_reaches_a_run_that_was_given_no_flag(final_dataset, monkeypatch):
+    """The command resolves the constant itself, so it is not a CLI-only default."""
+    path = final_dataset / "pretrain.pt"
+    path.write_bytes(b"weights")
+    monkeypatch.setattr(config, "BACKBONE_CHECKPOINT", path)
+    trained = []
+
+    run_final(
+        experiment=99, trainer=lambda context: (trained.append(context), fake_final_model())[1]
+    )
+
+    assert trained[0].checkpoint == path

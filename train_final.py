@@ -40,7 +40,14 @@ from cnn.data_setup import (
     load_spectral_axis,
     wavelengths_of,
 )
-from cnn.model import build_resnet50, classification_metrics, predict, seed_everything
+from cnn.model import (
+    build_resnet50,
+    checkpoint_identity,
+    checkpoint_path,
+    classification_metrics,
+    predict,
+    seed_everything,
+)
 
 matplotlib.use("Agg")  # the final run goes under nohup like the search
 import matplotlib.pyplot as plt  # noqa: E402
@@ -67,6 +74,8 @@ class FinalTraining:
     seed: int
     device: torch.device
     epochs: int
+    # The pretrained backbone this run starts from, or None for ImageNet alone.
+    checkpoint: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -119,7 +128,7 @@ def train_final_model(
         pin_memory=context.device.type == "cuda",
         generator=generator,
     )
-    model = build_resnet50(context.device)
+    model = build_resnet50(context.device, context.checkpoint)
     loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scaler = GradScaler(device="cuda") if context.device.type == "cuda" else None
@@ -150,7 +159,12 @@ def predict_test(
     size: tuple[int, int] = config.IMAGE_SIZE,
     num_workers: int = config.NUM_WORKERS,
 ) -> list[int]:
-    """Load the frozen weights and predict the held-out crops once, in order."""
+    """Load the frozen weights and predict the held-out crops once, in order.
+
+    No checkpoint here even when the training run had one: every parameter of
+    this model comes from the state dict that was just saved, so loading a
+    backbone first would only be overwritten.
+    """
     test_loader = DataLoader(
         SelectedBandDataset(
             context.test, context.bands, context.mean, context.std, size, training=False
@@ -250,11 +264,19 @@ RECORDED_SETTINGS = (
     "learning_rate",
     "image_size",
     "device_type",
+    "backbone_checkpoint",
 )
 
 
-def run_settings(bands: Candidate, device: torch.device, epochs: int) -> dict:
-    """What a rerun has to match to be a replay rather than a different result."""
+def run_settings(
+    bands: Candidate, device: torch.device, epochs: int, checkpoint: Path | None = None
+) -> dict:
+    """What a rerun has to match to be a replay rather than a different result.
+
+    `backbone_checkpoint` is null when there is none, which is what a metrics
+    file written before this ticket says by leaving the key out: a result
+    recorded without a checkpoint can still be replayed without one.
+    """
     return {
         "selected_band_indices": [int(band) for band in bands],
         "seed": config.FINAL_SEED,
@@ -263,6 +285,7 @@ def run_settings(bands: Candidate, device: torch.device, epochs: int) -> dict:
         "learning_rate": config.LEARNING_RATE,
         "image_size": list(config.IMAGE_SIZE),
         "device_type": device.type,
+        "backbone_checkpoint": checkpoint_identity(checkpoint),
     }
 
 
@@ -351,13 +374,17 @@ def write_metrics(
 
     It carries no timestamp and no elapsed time on purpose: two runs of the
     same experiment number and triplet write the same bytes, so a rerun that
-    changed something would show up as a diff.
+    changed something would show up as a diff.  `backbone_checkpoint` appears
+    only when the model was given one, so a run without one still writes the
+    file this protocol recorded.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint = checkpoint_identity(context.checkpoint)
     path.write_text(
         json.dumps(
             {
                 "schema_version": 1,
+                **({} if checkpoint is None else {"backbone_checkpoint": checkpoint}),
                 "experiment": experiment,
                 "primary_metric": "weighted_f1",
                 "evaluation_scope": "held-out-test-once-after-final-training",
@@ -400,17 +427,24 @@ def final_command(
     *,
     bands=None,
     epochs: int = config.NUM_EPOCHS,
+    checkpoint: Path | None = None,
     trainer=train_final_model,
     evaluator=predict_test,
     verbose: bool = True,
 ) -> None:
     """Train the final model of one experiment number and score it once.
 
+    `checkpoint` is resolved here rather than taken as given, so that
+    `config.BACKBONE_CHECKPOINT` applies to every caller and not only to the
+    command line.
+
     Raises:
-        ValueError: If the number belongs to an earlier protocol, if the bands
-            are not a triplet of this SpectralAxis, or if the trainer returns
-            something that is not a model with one history row per epoch.
+        ValueError: If a checkpoint was asked for and is not there, if the
+            number belongs to an earlier protocol, if the bands are not a
+            triplet of this SpectralAxis, or if the trainer returns something
+            that is not a model with one history row per epoch.
     """
+    checkpoint = checkpoint_path(checkpoint)
     refuse_a_number_an_earlier_protocol_owns(experiment)
     device = ga.select_device()
     # Resolved before a single NPZ is opened: a missing summary or a band out of
@@ -419,14 +453,16 @@ def final_command(
     wavelengths = load_spectral_axis(config.SPECTRAL_AXES)
     nanometres = wavelengths_of(selected, wavelengths)
     paths = final_paths(experiment, selected)
-    settings = run_settings(selected, device, epochs)
+    settings = run_settings(selected, device, epochs, checkpoint)
     ga.refuse_a_rerun_that_would_not_reproduce(paths["metrics"], settings, RECORDED_SETTINGS)
 
     training = load_partition_crops(
         config.HYPERCUBES_MANIFEST, "train", wavelengths, verbose=verbose
     )
     mean, std = fit_foreground_normalization(training, selected)
-    context = FinalTraining(selected, training, mean, std, config.FINAL_SEED, device, epochs)
+    context = FinalTraining(
+        selected, training, mean, std, config.FINAL_SEED, device, epochs, checkpoint
+    )
     if verbose:
         print(f"candidate      {selected}")
         print("wavelengths_nm " + ", ".join(f"{value}" for value in nanometres))
@@ -434,6 +470,8 @@ def final_command(
         print(f"mean           {list(mean)}")
         print(f"std            {list(std)}")
         print(f"device         {device}  |  epochs {epochs}  |  seed {context.seed}")
+        if checkpoint is not None:
+            ga.print_checkpoint(checkpoint)
 
     started = time.perf_counter()
     model = trainer(context)
@@ -495,9 +533,20 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--epochs", type=int, default=config.NUM_EPOCHS, help="epochs to train for (smoke use)"
     )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="a pretrained backbone to fine-tune from; the default is"
+        " config.BACKBONE_CHECKPOINT, and it is recorded beside the result",
+    )
     arguments = parser.parse_args(argv)
     try:
-        final_command(arguments.experiment, bands=arguments.bands, epochs=arguments.epochs)
+        final_command(
+            arguments.experiment,
+            bands=arguments.bands,
+            epochs=arguments.epochs,
+            checkpoint=arguments.checkpoint,
+        )
     except ValueError as refusal:
         print(f"train_final.py: {refusal}", file=sys.stderr)
         return 1

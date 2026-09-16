@@ -85,6 +85,16 @@ IMAGE_SIZE = (IMAGE_HEIGHT, IMAGE_WIDTH)
 # stream and another fitness.
 NUM_WORKERS = 8
 
+# --- Backbone initialization ----------------------------------------------
+# A ResNet50 backbone to load before fine-tuning, on top of the ImageNet
+# weights, or None for the 10 Sep behaviour: ImageNet and nothing else.  With
+# None no checkpoint call is made at all, so the model, the order it is built
+# in and the random stream its head is drawn from are the recorded run's.  The
+# path is written by `pretrain.py`; `--checkpoint` overrides this constant on
+# `ga.py` and `train_final.py`.  A checkpoint is part of the fitness contract,
+# so candidates trained with one and without one never share a cache.
+BACKBONE_CHECKPOINT = None  # e.g. MODELS_DIR / "pretrain_fit.pt"
+
 # --- Bootstrap ------------------------------------------------------------
 BOOTSTRAP_RESAMPLES = 5000  # whole acquisitions, not crops
 BOOTSTRAP_SEED = 1729  # the same number as CANDIDATE_SEED in the real run, on purpose

@@ -10,6 +10,7 @@ and the numbers of the 10 Sep 2026 run stop reproducing.
 
 import hashlib
 import random
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -39,6 +40,10 @@ from cnn.data_setup import (
 SEED_POLICY = "sha256-candidate-split-v1"
 
 RESNET50_WEIGHTS = torchvision.models.ResNet50_Weights.DEFAULT
+
+# What a backbone checkpoint is not allowed to carry: the classification head
+# belongs to this experiment's four classes and is drawn fresh every time.
+HEAD_PREFIX = "fc."
 
 
 # --- Data identity ---------------------------------------------------------
@@ -160,9 +165,101 @@ def classification_metrics(y_true: list[int], y_pred: list[int]) -> dict:
 # --- The model -------------------------------------------------------------
 
 
-def build_resnet50(device: torch.device) -> torch.nn.Module:
-    """ResNet50 with pretrained weights, `layer4` and a fresh 4-class head unfrozen."""
+def checkpoint_path(override: Path | str | None = None) -> Path | None:
+    """The backbone checkpoint this run loads: the override, else the constant.
+
+    Resolved before a single crop is read, so a path that is not there costs a
+    line rather than the minutes it takes to load the data first.
+
+    Raises:
+        ValueError: If a checkpoint was asked for and is not a file.
+    """
+    chosen = override if override is not None else config.BACKBONE_CHECKPOINT
+    if chosen is None:
+        return None
+    path = Path(chosen)
+    if not path.is_file():
+        raise ValueError(f"backbone checkpoint {path} is not there")
+    return path
+
+
+def checkpoint_identity(path: Path | None) -> dict[str, str] | None:
+    """Name one checkpoint by its bytes and by where it was read from, or None.
+
+    The hash is what makes two runs comparable; the path is there so a reader
+    of the record can find the file again.  A file inside the repository is
+    named relative to it, so the same checkpoint is the same identity whichever
+    directory the run was launched from.
+    """
+    if path is None:
+        return None
+    with path.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    resolved = path.resolve()
+    inside = resolved.is_relative_to(config.ROOT)
+    return {
+        "path": str(resolved.relative_to(config.ROOT)) if inside else str(resolved),
+        "sha256": digest,
+    }
+
+
+def load_backbone_checkpoint(model: torch.nn.Module, path: Path) -> None:
+    """Load a pretrained backbone into `model`, and never a head.
+
+    A checkpoint that is not this backbone is an error rather than a partial
+    load: a run that silently kept the ImageNet weights for half its layers
+    would report a number nothing could reproduce.  Head parameters in the file
+    are dropped, because the four-class head of this experiment is always
+    freshly drawn.
+
+    Raises:
+        ValueError: If the file holds no state dict, or if its keys or shapes
+            are not the backbone's.
+    """
+    loaded = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(loaded, dict) or not all(
+        isinstance(value, torch.Tensor) for value in loaded.values()
+    ):
+        raise ValueError(f"{path} does not hold a state dict of tensors")
+    state = {name: value for name, value in loaded.items() if not name.startswith(HEAD_PREFIX)}
+    backbone = {
+        name: value
+        for name, value in model.state_dict().items()
+        if not name.startswith(HEAD_PREFIX)
+    }
+    faults = [
+        f"{kind} {', '.join(names)}"
+        for kind, names in (
+            ("missing", sorted(set(backbone) - set(state))),
+            ("unexpected", sorted(set(state) - set(backbone))),
+            (
+                "reshaped",
+                sorted(
+                    name
+                    for name in set(state) & set(backbone)
+                    if state[name].shape != backbone[name].shape
+                ),
+            ),
+        )
+        if names
+    ]
+    if faults:
+        raise ValueError(f"{path} is not this backbone: {'; '.join(faults)}")
+    # Not strict: the head is deliberately absent from `state`, and every other
+    # key was just checked by name and by shape.
+    model.load_state_dict(state, strict=False)
+
+
+def build_resnet50(device: torch.device, checkpoint: Path | None = None) -> torch.nn.Module:
+    """ResNet50 with pretrained weights, `layer4` and a fresh 4-class head unfrozen.
+
+    With no `checkpoint` this is the model of the 10 Sep run, built by the same
+    calls in the same order: the injection point below is not entered at all,
+    so it cannot consume randomness the recorded head was drawn from.
+    """
     model = torchvision.models.resnet50(weights=RESNET50_WEIGHTS)
+    if checkpoint is not None:
+        load_backbone_checkpoint(model, checkpoint)
     for parameter in model.parameters():
         parameter.requires_grad = False
     for parameter in model.layer4.parameters():
@@ -196,6 +293,7 @@ def evaluate_candidate(
     *,
     seed: int,
     device: torch.device,
+    checkpoint: Path | None = None,
     epochs: int = config.NUM_EPOCHS,
     batch_size: int = config.BATCH_SIZE,
     learning_rate: float = config.LEARNING_RATE,
@@ -206,6 +304,8 @@ def evaluate_candidate(
 
     Normalization is fitted on the training crops alone, so the crops that
     grade the candidate contribute nothing to the scale it is graded under.
+    `checkpoint` is the optional pretrained backbone the fine-tuning starts
+    from; with None the candidate is trained from the ImageNet weights alone.
     Returns the ordered validation predictions, the metrics, and the frozen
     mean and std.
 
@@ -237,7 +337,7 @@ def evaluate_candidate(
     )
     # The model is built after the loaders: it draws from the same torch
     # generator when its head is initialized.
-    model = build_resnet50(device)
+    model = build_resnet50(device, checkpoint)
     loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     engine.train(
