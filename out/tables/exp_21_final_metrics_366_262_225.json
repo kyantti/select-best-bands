@@ -1,0 +1,89 @@
+{
+  "batch_size": 32,
+  "device_type": "cuda",
+  "epochs": 50,
+  "evaluation_scope": "held-out-test-once-after-final-training",
+  "experiment": 21,
+  "image_size": [
+    64,
+    128
+  ],
+  "learning_rate": 0.001,
+  "libraries": {
+    "deap": "1.4.4",
+    "numpy": "2.5.1",
+    "scikit-learn": "1.9.0",
+    "torch": "2.13.0+cu126",
+    "torchvision": "0.28.0+cu126"
+  },
+  "metrics": {
+    "confusion_matrix": [
+      [
+        50,
+        3,
+        6,
+        13
+      ],
+      [
+        6,
+        43,
+        9,
+        10
+      ],
+      [
+        4,
+        7,
+        46,
+        3
+      ],
+      [
+        4,
+        3,
+        3,
+        46
+      ]
+    ],
+    "macro_f1": 0.7223819971537002,
+    "ordinal_mae": 0.5,
+    "per_class_recall": {
+      "C0": 0.6944444444444444,
+      "C1": 0.6323529411764706,
+      "C2": 0.7666666666666667,
+      "C3": 0.8214285714285714
+    },
+    "quadratic_weighted_kappa": 0.5815011372251706,
+    "weighted_f1": 0.722142952443074
+  },
+  "normalization": {
+    "fitted_on": "train-foreground",
+    "mean": [
+      0.65546626556172,
+      0.6584057421588269,
+      0.22467686763531047
+    ],
+    "std": [
+      0.11717051462839731,
+      0.125102268224151,
+      0.07519302019349307
+    ]
+  },
+  "primary_metric": "weighted_f1",
+  "schema_version": 1,
+  "seed": 2718,
+  "selected_band_indices": [
+    366,
+    262,
+    225
+  ],
+  "selected_wavelengths_nm": [
+    891.02,
+    747.5,
+    697.05
+  ],
+  "test_acquisition_count": 8,
+  "test_cropped_hypercube_count": 256,
+  "test_evaluation_count": 1,
+  "test_feedback_used": false,
+  "train_acquisition_count": 28,
+  "train_cropped_hypercube_count": 868
+}

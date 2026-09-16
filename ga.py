@@ -588,25 +588,32 @@ def load_selection_data(*, verbose: bool = True):
     return training, validation, wavelengths, identity
 
 
-def write_predictions(path: Path, validation: list[Hypercube], predictions: list[int]) -> None:
-    """Write one row per validation crop, in the order the model saw them.
+def write_predictions(
+    path: Path, crops: list[Hypercube], predictions: list[int], *, exclusive: bool = True
+) -> None:
+    """Write one row per crop, in the order the model saw them.
 
-    Opened exclusively, as fig-aflatoxin opens it: a file under `out/` is part
-    of the thesis record, so a second run of the same triplet has to be told to
-    write elsewhere rather than quietly replace the first one's numbers.
+    `acquisition_id` travels with every row because a grouped bootstrap
+    resamples whole captures: crops of one capture are not independent.
+
+    Opened exclusively by default, as fig-aflatoxin opens it: a file under
+    `out/` is part of the thesis record, so a second run of the same triplet
+    has to be told to write elsewhere rather than quietly replace the first
+    one's numbers.  `train_final.py` passes `exclusive=False` because it guards
+    its own outputs by comparing the settings they were recorded under.
 
     Raises:
-        FileExistsError: If `path` is already there.
+        FileExistsError: If `path` is already there and `exclusive`.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", newline="") as target:
+    with path.open("x" if exclusive else "w", newline="") as target:
         writer = csv.DictWriter(
             target,
             fieldnames=("cropped_hypercube_id", "acquisition_id", "actual", "predicted"),
             lineterminator="\n",
         )
         writer.writeheader()
-        for hypercube, prediction in zip(validation, predictions, strict=True):
+        for hypercube, prediction in zip(crops, predictions, strict=True):
             writer.writerow(
                 {
                     "cropped_hypercube_id": hypercube.cropped_hypercube_id,

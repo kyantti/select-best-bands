@@ -15,9 +15,11 @@ import torch
 
 import config
 import ga
+import train_final
 from cnn.data_setup import (
     CROPPED_HYPERCUBE_FIELDS,
     PARTITION_FIELDS,
+    SPECTRAL_AXIS_FIELDS,
     SelectedBandDataset,
     apply_foreground_normalization,
     fit_foreground_normalization,
@@ -259,7 +261,7 @@ def crop(value, *, height=1, width=1, foreground=None):
     return reflectance, mask
 
 
-def write_dataset(directory, crops):
+def write_dataset(directory, crops, *, axis_id="axis"):
     """Write a CroppedHypercube manifest and its NPZ artifacts; return the manifest path."""
     manifest = directory / "cropped_hypercubes.csv"
     artifacts = directory / "cropped_hypercubes"
@@ -282,7 +284,7 @@ def write_dataset(directory, crops):
                 "band_count": str(reflectance.shape[2]),
                 "artifact_relative_path": f"cropped_hypercubes/{identity}.npz",
                 "artifact_checksum": "unchecked",
-                "spectral_axis_id": "axis",
+                "spectral_axis_id": axis_id,
             }
         )
     with manifest.open("w", newline="") as target:
@@ -853,3 +855,228 @@ def test_ga_winner_is_never_a_candidate_the_search_did_not_propose(tmp_path):
     assert stranger not in result.fitness
     assert result.winner != stranger
     assert result.winner in result.fitness
+
+
+# --- The final model and the single read of the test set --------------------
+
+
+FINAL_WAVELENGTHS = [400.0, 450.0, 500.0, 550.0, 600.0]  # one per band of `crop`
+FINAL_BANDS = (3, 0, 2)
+
+
+def write_spectral_axes(directory, wavelengths):
+    """A SpectralAxis manifest whose id is the content address of its wavelengths."""
+    path = directory / "spectral_axes.csv"
+    with path.open("w", newline="") as target:
+        writer = csv.DictWriter(
+            target, fieldnames=SPECTRAL_AXIS_FIELDS, lineterminator="\n"
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "schema_version": "1",
+                "spectral_axis_id": spectral_axis_id(wavelengths),
+                "band_count": str(len(wavelengths)),
+                "wavelengths_nm": json.dumps(wavelengths, separators=(",", ":")),
+            }
+        )
+    return path
+
+
+def write_partitions(directory, rows):
+    path = directory / "evaluation_partitions.csv"
+    with path.open("w", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=PARTITION_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+@pytest.fixture
+def final_dataset(tmp_path, monkeypatch):
+    """A whole dataset — train-fit, validation and held-out test — config pointed at it.
+
+    The two test crops are in the manifest in an order that is neither sorted
+    nor the order the partition rows name them in, so an evaluation that lost
+    the manifest order would show up in the predictions file.
+    """
+    axis = write_spectral_axes(tmp_path, FINAL_WAVELENGTHS)
+    crops = [
+        ("fit-a", "acq-fit", "C0", crop(0.2)),
+        ("fit-b", "acq-fit-two", "C1", crop(0.5)),
+        ("val-a", "acq-validation", "C2", crop(0.4)),
+        ("test-z", "acq-test", "C3", crop(0.8)),
+        ("test-a", "acq-test", "C3", crop(0.7)),
+    ]
+    manifest = write_dataset(tmp_path, crops, axis_id=spectral_axis_id(FINAL_WAVELENGTHS))
+    partitions = write_partitions(
+        tmp_path,
+        [
+            partition_row("fit-a", "acq-fit", "C0", "train", "train"),
+            partition_row("fit-b", "acq-fit-two", "C1", "train", "train"),
+            partition_row("val-a", "acq-validation", "C2", "train", "validation"),
+            partition_row("test-a", "acq-test", "C3", "test", ""),
+            partition_row("test-z", "acq-test", "C3", "test", ""),
+        ],
+    )
+    for name, value in (
+        ("HYPERCUBES_MANIFEST", manifest),
+        ("SPECTRAL_AXES", axis),
+        ("PARTITIONS", partitions),
+        ("TABLES_DIR", tmp_path / "tables"),
+        ("FIGURES_DIR", tmp_path / "figures"),
+        ("MODELS_DIR", tmp_path / "models"),
+        ("DEVICE", "cpu"),
+    ):
+        monkeypatch.setattr(config, name, value)
+    return tmp_path
+
+
+def fake_final_model(epochs=2):
+    """What an injected trainer hands back: a state dict and one row per epoch."""
+    return train_final.FinalModel(
+        state={"fc.bias": torch.zeros(config.NUM_CLASSES)},
+        history=[
+            {"epoch": epoch, "train_loss": 1.0 / epoch, "train_accuracy": 0.25 * epoch}
+            for epoch in range(1, epochs + 1)
+        ],
+    )
+
+
+def run_final(experiment=21, bands=FINAL_BANDS, *, trainer=None, evaluator=None, epochs=2):
+    """One final-model run whose training and inference are replaced by fakes."""
+    return train_final.final_command(
+        experiment,
+        bands=bands,
+        epochs=epochs,
+        trainer=trainer if trainer is not None else lambda context: fake_final_model(epochs),
+        evaluator=evaluator if evaluator is not None else (lambda context: [0, 3]),
+        verbose=False,
+    )
+
+
+def test_final_trains_on_every_train_crop_and_never_sees_a_test_crop(final_dataset):
+    trained = []
+
+    run_final(trainer=lambda context: (trained.append(context), fake_final_model())[1])
+
+    (context,) = trained
+    # Fit and validation together: the inner split did its job during the search.
+    assert [item.cropped_hypercube_id for item in context.training] == ["fit-a", "fit-b", "val-a"]
+    assert context.seed == config.FINAL_SEED
+    # There is no test crop reachable from what the trainer is handed.
+    assert not hasattr(context, "test")
+
+
+def test_final_saves_the_model_before_the_test_set_is_opened(final_dataset, monkeypatch):
+    """The claim of the whole script: no held-out crop is read until the model is frozen."""
+    model_path = train_final.final_paths(21, FINAL_BANDS)["model"]
+    opened = []
+    load_crops = train_final.load_crops
+
+    def watched(partition, wavelengths, *, verbose):
+        opened.append((partition, model_path.exists()))
+        return load_crops(partition, wavelengths, verbose=verbose)
+
+    monkeypatch.setattr(train_final, "load_crops", watched)
+    evaluated = []
+
+    run_final(evaluator=lambda context: (evaluated.append(model_path.exists()), [0, 3])[1])
+
+    assert opened == [("train", False), ("test", True)]
+    assert evaluated == [True]
+    assert torch.load(model_path, weights_only=True)["fc.bias"].tolist() == [0.0] * 4
+
+
+def test_final_evaluates_the_held_out_crops_once_in_manifest_order(final_dataset):
+    evaluated = []
+
+    run_final(evaluator=lambda context: (evaluated.append(context), [0, 3])[1])
+
+    (context,) = evaluated
+    assert [item.cropped_hypercube_id for item in context.test] == ["test-z", "test-a"]
+    assert context.state["fc.bias"].tolist() == [0.0] * 4
+    rows = list(csv.DictReader(train_final.final_paths(21, FINAL_BANDS)["predictions"].open()))
+    assert [row["cropped_hypercube_id"] for row in rows] == ["test-z", "test-a"]
+    assert [row["actual"] for row in rows] == ["C3", "C3"]
+    assert [row["predicted"] for row in rows] == ["C0", "C3"]
+    assert [row["acquisition_id"] for row in rows] == ["acq-test", "acq-test"]
+
+
+def test_final_writes_its_tables_and_figures_with_the_bands_in_their_names(final_dataset):
+    run_final()
+
+    paths = train_final.final_paths(21, FINAL_BANDS)
+    assert all(path.exists() for path in paths.values())
+    assert {path.name for path in paths.values()} == {
+        "exp_21_model_3_0_2.pt",
+        "exp_21_final_metrics_3_0_2.json",
+        "exp_21_confusion_matrix_3_0_2.csv",
+        "exp_21_confusion_matrix_3_0_2.png",
+        "exp_21_test_predictions_3_0_2.csv",
+        "exp_21_training_history_3_0_2.csv",
+        "exp_21_training_history_3_0_2.png",
+    }
+    metrics = json.loads(paths["metrics"].read_text())
+    assert metrics["selected_band_indices"] == [3, 0, 2]
+    assert metrics["selected_wavelengths_nm"] == [550.0, 400.0, 500.0]
+    assert metrics["seed"] == config.FINAL_SEED
+    assert metrics["test_evaluation_count"] == 1
+    assert metrics["train_cropped_hypercube_count"] == 3
+    assert metrics["test_cropped_hypercube_count"] == 2
+    assert set(metrics["metrics"]["per_class_recall"]) == set(config.CLASS_NAMES)
+    assert len(metrics["normalization"]["mean"]) == 3
+    history = list(csv.DictReader(paths["history"].open()))
+    assert [row["epoch"] for row in history] == ["1", "2"]
+    assert tuple(history[0]) == ("epoch", "train_loss", "train_accuracy")
+    confusion = list(csv.reader(paths["confusion"].open()))
+    assert confusion[0] == ["actual", *(f"predicted_{name}" for name in config.CLASS_NAMES)]
+    assert [row[0] for row in confusion[1:]] == list(config.CLASS_NAMES)
+    # One of the two C3 crops was predicted C0 and the other C3.
+    assert confusion[4] == ["C3", "1", "0", "0", "1"]
+
+
+def test_final_reads_the_winner_from_the_ga_summary_when_no_bands_are_given(final_dataset):
+    config.TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    (config.TABLES_DIR / "exp_21_ga_summary.json").write_text(
+        json.dumps({"winner": {"selected_band_indices": [4, 1, 0]}})
+    )
+    trained = []
+
+    run_final(bands=None, trainer=lambda context: (trained.append(context), fake_final_model())[1])
+
+    assert trained[0].bands == (4, 1, 0)
+    assert train_final.final_paths(21, (4, 1, 0))["metrics"].exists()
+
+
+def test_final_without_bands_or_a_summary_says_which_file_is_missing(final_dataset):
+    with pytest.raises(ValueError, match="exp_21_ga_summary.json"):
+        run_final(bands=None)
+
+
+def test_final_refuses_an_experiment_number_an_earlier_protocol_owns(final_dataset):
+    config.TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    (config.TABLES_DIR / "exp_07_ga_stats.csv").write_text("gen\n0\n")
+
+    with pytest.raises(ValueError, match="earlier run|new experiment number"):
+        run_final(experiment=7)
+
+
+def test_final_writes_a_free_experiment_number_and_its_own_number_again(final_dataset):
+    run_final(experiment=99)
+    first = train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text()
+
+    run_final(experiment=99)
+
+    assert train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text() == first
+
+
+def test_final_refuses_a_rerun_that_would_not_reproduce_the_recorded_result(final_dataset):
+    """A replay rewrites the same bytes; another epoch count would overwrite a result."""
+    run_final(experiment=99, epochs=2)
+    recorded = train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text()
+
+    with pytest.raises(ValueError, match="different epochs"):
+        run_final(experiment=99, epochs=1)
+
+    assert train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text() == recorded
