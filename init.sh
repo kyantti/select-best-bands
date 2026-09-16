@@ -23,7 +23,7 @@ echo "=== syntax check ==="
 uv run python -m compileall -q config.py split_dataset.py ga.py train_final.py bootstrap.py check_data.py create_summary_table.py plot_fitness_evolution.py cnn
 
 echo "=== import smoke test (config + scripts + cnn package) ==="
-uv run python -c "import config, split_dataset, ga, train_final, bootstrap, cnn.engine, cnn.data_setup, cnn.model; print('imports OK')"
+uv run python -c "import config, split_dataset, ga, train_final, bootstrap, plot_fitness_evolution, cnn.engine, cnn.data_setup, cnn.model; print('imports OK')"
 
 echo "=== data files ==="
 uv run python - <<'PY'

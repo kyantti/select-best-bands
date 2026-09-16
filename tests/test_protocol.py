@@ -16,6 +16,7 @@ import torch
 import bootstrap
 import config
 import ga
+import plot_fitness_evolution
 import train_final
 from cnn.data_setup import (
     CROPPED_HYPERCUBE_FIELDS,
@@ -1335,3 +1336,79 @@ def test_bootstrap_reproduces_the_recorded_interval_of_experiment_21():
 
     assert interval.point == 0.722142952443074
     assert (round(interval.low, 3), round(interval.high, 3)) == (0.645, 0.848)
+
+
+# --- Redrawing the fitness curve of a finished search ------------------------
+
+
+def generation_records(count=3):
+    """What `run_search` hands to `write_stats`: one record per generation."""
+    return [
+        {
+            "gen": gen,
+            "nevals": 4 - gen,
+            "population_size": 4,
+            "unique_population_candidates": 4 - gen,
+            "avg": 0.50 + gen / 100,
+            "std": 0.01,
+            "min": 0.40,
+            "max": 0.60 + gen / 100,
+            "best": (1, 2, 3),
+        }
+        for gen in range(count)
+    ]
+
+
+@pytest.fixture
+def searched_experiment(tmp_path, monkeypatch):
+    """The two tables a finished search leaves behind, and an empty figures dir."""
+    for name, value in (
+        ("TABLES_DIR", tmp_path / "tables"),
+        ("FIGURES_DIR", tmp_path / "figures"),
+    ):
+        monkeypatch.setattr(config, name, value)
+    paths = ga.experiment_paths(21)
+    ga.write_stats(paths["stats"], generation_records(), FINAL_WAVELENGTHS)
+    paths["summary"].write_text(
+        json.dumps({"winner": {"selected_wavelengths_nm": [891.02, 747.5, 697.05]}})
+    )
+    return paths
+
+
+def test_plot_reads_back_the_generations_the_search_wrote(searched_experiment):
+    rows = plot_fitness_evolution.read_generations(searched_experiment["stats"])
+
+    assert [row["gen"] for row in rows] == [0, 1, 2]
+    assert [row["avg"] for row in rows] == [0.50, 0.51, 0.52]
+    assert rows[0]["nevals"] == 4
+
+
+def test_plot_refuses_the_stats_of_a_search_before_experiment_21(tmp_path):
+    path = tmp_path / "exp_10_ga_stats.csv"
+    path.write_text("gen,nevals,avg,std,min,max,best\n0,20,0.69,0.05,0.56,0.76,\"[3, 1, 2]\"\n")
+
+    with pytest.raises(ValueError, match="21"):
+        plot_fitness_evolution.read_generations(path)
+
+
+def test_plot_takes_the_title_from_the_winner_of_the_summary(searched_experiment):
+    assert plot_fitness_evolution.winner_wavelengths(searched_experiment["summary"]) == (
+        891.02,
+        747.5,
+        697.05,
+    )
+
+
+def test_plot_redraws_the_figure_of_the_experiment_it_is_given(searched_experiment):
+    figure = plot_fitness_evolution.plot_command(21, verbose=False)
+
+    assert figure == searched_experiment["figure"]
+    assert figure.name == "exp_21_fitness_evolution.png"
+    assert figure.read_bytes().startswith(b"\x89PNG")
+
+
+def test_plot_says_which_file_an_unsearched_experiment_is_missing(searched_experiment):
+    with pytest.raises(ValueError, match="exp_22_ga_stats.csv"):
+        plot_fitness_evolution.plot_command(22, verbose=False)
+
+    assert plot_fitness_evolution.main(["22"]) == 1

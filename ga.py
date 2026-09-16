@@ -194,6 +194,21 @@ CANDIDATE_FIELDS = (
 )
 METRIC_FIELDS = ("weighted_f1", "macro_f1", "ordinal_mae", "quadratic_weighted_kappa")
 
+# One row per generation of a search.  `plot_fitness_evolution.py` reads the
+# same tuple back, so the schema of the curve lives here and nowhere else.
+STATS_FIELDS = (
+    "gen",
+    "nevals",
+    "population_size",
+    "unique_population_candidates",
+    "avg",
+    "std",
+    "min",
+    "max",
+    "best",
+    "best_wavelengths_nm",
+)
+
 
 class CandidateCache:
     """Every candidate this experiment has trained, on disk, appended as it finishes.
@@ -802,27 +817,15 @@ def refuse_to_reuse_an_old_experiment_number(paths: dict[str, Path], prefix: str
 
 def write_stats(path: Path, generations: list[dict], wavelengths: list[float]) -> None:
     """One row per generation, keeping v1's column names so old readers still work."""
-    fields = (
-        "gen",
-        "nevals",
-        "population_size",
-        "unique_population_candidates",
-        "avg",
-        "std",
-        "min",
-        "max",
-        "best",
-        "best_wavelengths_nm",
-    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as target:
-        writer = csv.DictWriter(target, fieldnames=fields, lineterminator="\n")
+        writer = csv.DictWriter(target, fieldnames=STATS_FIELDS, lineterminator="\n")
         writer.writeheader()
         for record in generations:
             best = record["best"]
             writer.writerow(
                 {
-                    **{name: record[name] for name in fields[:8]},
+                    **{name: record[name] for name in STATS_FIELDS[:8]},
                     "best": json.dumps(list(best)),
                     "best_wavelengths_nm": json.dumps(list(wavelengths_of(best, wavelengths))),
                 }

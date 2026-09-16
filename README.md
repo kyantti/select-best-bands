@@ -1,260 +1,246 @@
-# 🧬 Hyperspectral Band Selection with Genetic Algorithm
+# 🧬 Hyperspectral band selection with a genetic algorithm
 
-This project implements a genetic algorithm-based approach to optimize RGB band selection from hyperspectral imaging data for toxin classification in figs. The system combines evolutionary optimization with deep learning to identify the most informative spectral bands for distinguishing between different toxin contamination levels.
+A genetic algorithm (DEAP) picks the best 3 of 448 hyperspectral bands for
+aflatoxin classification in figs. Each band triplet is scored by fine-tuning a
+ResNet50 on the RGB images those three bands produce.
 
-## 🔬 Research Context
+The dataset is 1124 crops cut from 36 hyperspectral acquisitions of figs, in
+four severity classes: healthy (C0), low (C1), medium (C2) and high (C3)
+aflatoxin contamination. The spectral axis runs from 397.01 nm to 1004.52 nm in
+448 bands.
 
-Hyperspectral imaging captures data across hundreds of spectral bands, but many are redundant for specific classification tasks. This project addresses the challenge of selecting optimal band combinations that maximize classification accuracy while reducing computational complexity. The application focuses on detecting aflatoxin contamination in figs, with four classification levels: healthy (C0), low toxin (C1), medium toxin (C2), and high toxin (C3).
+## 🔬 The protocol, in plain words
 
-![Data Sanity Check](sanity-check/data_sanity_check.png)
+The point of the protocol is that the number at the end is defensible: the test
+set takes no part in choosing anything.
 
-## ✨ Features
+1. **The split is by acquisition, not by fig.** Crops of one acquisition are
+   correlated — same fruit, same illumination, same day — so a crop of an
+   acquisition on both sides of the split leaks. `split_dataset.py` groups by
+   `acquisition_id` and stratifies by severity class: **28 acquisitions (868
+   crops) for train, 8 (256 crops) held out for test**.
+2. **Validation lives inside train.** The same grouped 80/20 is applied again
+   inside the train side: **22 acquisitions (708 crops) to fit, 6 (160 crops) to
+   validate**. The genetic algorithm only ever sees these two.
+3. **Normalization is fitted on the train foreground.** Mean and standard
+   deviation come from the foreground pixels of the 708 fitting crops — not from
+   ImageNet's constants, and not from any crop the model is scored on.
+4. **Fitness is the validation weighted F1.** Not accuracy, and never a test
+   score. Each candidate trains a ResNet50 for 50 epochs under a seed derived
+   from the triplet and from a checksum of the data it is trained on, so the
+   same candidate always gets the same fitness.
+5. **The final model reads the test set once.** `train_final.py` retrains the
+   winning triplet on all 28 train acquisitions, saves the state dict, and only
+   then opens the held-out crops, for a single inference. The script refuses to
+   rewrite a recorded result under settings that would change it.
+6. **The interval is over acquisitions.** `bootstrap.py` resamples whole test
+   acquisitions 5000 times over the predictions already on disk (it runs no
+   model and reads no crop) and reports the 95 % percentile interval of the
+   weighted F1 — 8 acquisitions, so the interval is wide on purpose.
 
-- **Genetic Algorithm Optimization:** Uses DEAP framework to evolve optimal RGB band combinations from 448 hyperspectral bands
-- **Transfer Learning:** ResNet50 pre-trained model fine-tuned for toxin classification
-- **Basic Evaluation Metrics:** Tracks training/test loss and accuracy across epochs
-- **Memory Optimization:** Efficient data loading strategy for large hyperspectral datasets
-- **Experiment Management:** Support for multiple experimental runs with detailed logging
-- **Modular Architecture:** Clean separation between GA optimization and CNN training components
+## 🚧 The v1 / v2 boundary: experiment 21
 
-## 📁 Project Structure
+**Experiments 1–20 are the earlier protocol and their results do not hold.**
+They split by fig instead of by acquisition, scored every candidate on the test
+set, normalized with ImageNet's constants, seeded the RNG after drawing the
+population, and mutated so weakly that the population collapsed to one
+candidate. Their files stay in `out/` as part of the record, and the tools that
+read them (`create_summary_table.py`) still do.
+
+**Experiment 21 onwards is this protocol.** 21 is the replay of the 10 Sep 2026
+search, so **the first new real run is 22**.
+
+## 📁 Project structure
 
 ```
 select-best-bands/
-├── ga.py                      # Main genetic algorithm script
-├── check_data.py              # Data validation and sanity checks  
+├── config.py                # every constant of the experiment, in one place
+├── split_dataset.py         # the acquisition-grouped, stratified split
+├── ga.py                    # the search, its on-disk cache, its outputs
+├── train_final.py           # the final model and the single read of the test set
+├── bootstrap.py             # the confidence interval, by acquisition
+├── run.sh                   # the four steps above, chained, with logs
 ├── cnn/
-│   ├── data_setup.py          # Data loading and preprocessing
-│   ├── engine.py              # Training and evaluation utilities
-│   ├── train.py               # CNN training script (used by GA)
-│   └── util/
-│       └── helper_functions.py# Visualization and utilities
-├── data/                      # Hyperspectral data (excluded from git)
-│   ├── interim/
-│   │   └── cropped-hypercubes/# Raw hyperspectral patches (C0-C3)
-│   └── processed/
-│       ├── train/             # Training data (C0-C3)
-│       └── test/              # Test data (C0-C3)
-├── out/                       # Experiment outputs
-│   ├── logs/                  # Experiment log files
-│   ├── figures/               # Generated plots and visualizations
-│   └── tables/                # Results CSV files
-├── sanity-check/
-│   └── data_sanity_check.png  # Data visualization output
-├── train_dataset.csv          # Training data manifest (898 samples)
-├── test_dataset.csv           # Test data manifest
-├── pyproject.toml             # Project dependencies and configuration
-├── uv.lock                    # Dependency lock file
-└── README.md                  # Project documentation
+│   ├── data_setup.py        # manifest, partition, NPZ, normalization, dataset
+│   ├── engine.py            # the training and evaluation loops
+│   └── model.py             # ResNet50, data identity, seeds, metrics
+├── check_data.py            # data sanity checks
+├── create_summary_table.py  # summary of experiments 1–10 (v1 tool)
+├── plot_fitness_evolution.py# redraws exp_NN_fitness_evolution.png from the tables
+├── data/                    # gitignored
+│   ├── cropped_hypercubes/  # symlink to the 1124 NPZ crops
+│   ├── cropped_hypercubes.csv
+│   ├── spectral_axes.csv
+│   └── evaluation_partitions.csv   # written by split_dataset.py
+├── out/                     # the experiment record, tracked in git
+│   ├── tables/  figures/  logs/
+│   └── models/              # the .pt checkpoints, gitignored (91 MB each)
+├── tests/test_protocol.py   # the protocol tests: no GPU, no data/
+├── init.sh                  # the verification gate
+└── pyproject.toml           # pinned dependencies
 ```
+
+**Every file of one experiment starts with its number**: experiment `NN` owns
+`out/tables/exp_NN_*` and `out/figures/exp_NN_*`, and nothing else writes
+there. A new run takes a new number; smoke runs take 90–99 and are deleted
+afterwards. `ga.py` and `train_final.py` refuse a number that belongs to
+someone else.
 
 ## 🔧 Prerequisites
 
-- Python 3.13+
-- CUDA-capable GPU
-- At least 16GB RAM
-- [uv](https://github.com/astral-sh/uv) package manager (recommended)
+- Python 3.13 (pinned in `.python-version`)
+- A CUDA GPU (the runs below are on an A100)
+- [uv](https://github.com/astral-sh/uv)
+- The dataset in `data/` (gitignored: 1124 NPZ crops plus the two manifests)
 
-## ⚙️ Installation
-
-### Option 1: Using uv (Recommended)
+## ⚙️ Installation and verification
 
 ```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone the repository
-git clone <repository-url>
-cd select-best-bands
-
-# Install dependencies
-uv sync
+uv sync        # installs the pinned versions, torch from the cu126 index
+./init.sh      # the gate: compile, import, check the data files, run pytest
 ```
 
-### Option 2: Using pip
+`./init.sh` is green when the imports work, the three data files are there (it
+warns rather than fails when `data/` is absent, so code work is possible on a
+machine without the dataset) and the protocol tests pass. Use
+`SKIP_SYNC=1 ./init.sh` when the dependencies are already installed.
+
+## 🏃 Running
+
+### The whole chain
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd select-best-bands
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
+./run.sh 22
 ```
 
-## 📦 Dependencies
+`run.sh N` runs `split_dataset.py`, then `ga.py N`, then `train_final.py N`,
+then `bootstrap.py N`, logging each step to `out/logs/experiment_N.log`,
+`final_N.log` and `bootstrap_N.log`. It defaults to `CUDA_VISIBLE_DEVICES=1`.
 
-Core packages automatically installed:
-- **PyTorch Ecosystem:** torch, torchvision, torcheval, torchinfo
-- **Genetic Algorithm:** deap
-- **Data Science:** numpy, pandas, matplotlib, scikit-learn
-- **Utilities:** tqdm, pillow, requests
+**A real run is hours on an A100** (an initial population of 20 plus 25
+generations, each individual trained for 50 epochs, minus the cache hits), so
+launch it detached:
 
-## 🗂️ Data Format
+```bash
+nohup ./run.sh 22 > out/logs/run_22.log 2>&1 &
+tail -f out/logs/experiment_22.log        # follow the search
+wc -l out/tables/exp_22_candidates.csv    # one row per candidate evaluated so far
+```
 
-### CSV Structure
-- **Files:** `train_dataset.csv` (898 samples), `test_dataset.csv`
-- **Columns:** `filepath` (path to .npy file), `label` (numeric: 0, 1, 2, 3)
-- **Example:**
-  ```csv
-  filepath,label
-  data/processed/train/C0/sample_001.npy,0
-  data/processed/train/C1/sample_002.npy,1
-  ```
+### One step at a time
 
-### Hyperspectral Data
-- **Format:** NumPy arrays (`.npy` files)
-- **Shape:** `(height, width, 448)` - 448 spectral bands
-- **Data Type:** Float32, normalized pixel intensities
-- **Classes (numeric labels in CSV):** 
-  - **0 (C0):** Healthy figs (no toxin contamination)
-  - **1 (C1):** Low toxin contamination
-  - **2 (C2):** Medium toxin contamination  
-  - **3 (C3):** High toxin contamination
+```bash
+uv run python split_dataset.py            # writes data/evaluation_partitions.csv
+uv run python ga.py 22                    # the search
+uv run python ga.py --evaluate 366 262 225  # score one triplet, write no exp_NN_ file
+uv run python train_final.py 22           # the winner of exp_22_ga_summary.json
+uv run python train_final.py 22 --bands 366 262 225
+uv run python bootstrap.py 22             # the interval, from the predictions on disk
+uv run python plot_fitness_evolution.py 22  # redraw the curve from the tables
+```
+
+### Resuming
+
+`ga.py` writes every candidate it evaluates to `out/tables/exp_NN_candidates.csv`
+as it goes. Relaunching the same number restores that cache and re-runs the
+search over it: everything already evaluated is a replay, and only the missing
+candidates are trained. The cache refuses rows written under another data
+identity, another seed or another fitness contract, so a resume that would not
+reproduce the run stops instead of quietly mixing two runs.
+
+`--no-evaluate` replays a finished search from a warm cache and trains nothing
+— that is how experiment 21 reproduced the 10 Sep search without a GPU.
+
+### A smoke chain
+
+To check the code paths without spending hours, use a throwaway number and
+delete its outputs afterwards:
+
+```bash
+./run.sh 99 --population 4 --generations 1 --epochs 1
+rm -f out/tables/exp_99_* out/figures/exp_99_* out/models/exp_99_* out/logs/*_99.log
+```
 
 ## ⚡ Configuration
 
-### GA Parameters (in `ga.py`)
+Every constant lives in `config.py` — paths, class names, device, seeds,
+partition proportions, GA parameters, CNN hyperparameters, bootstrap. Past
+results depend on these values, so a change to them is a new experiment number,
+never a re-run of an old one.
 
 ```python
-# Population and Evolution
-POPULATION_SIZE = 20        # Size of each generation
-GENERATIONS = 50           # Number of evolutionary cycles
-CROSSOVER_PROB = 0.8       # Probability of crossover
-MUTATION_PROB = 0.15       # Probability of mutation
-ELITISM_SIZE = 1           # Number of best individuals preserved
+# Partition
+PARTITION_SEED = 20230717
+TEST_PROPORTION = 0.2
+VALIDATION_PROPORTION = 0.2
 
-# CNN Training
+# Genetic algorithm
+POPULATION_SIZE = 20
+GENERATIONS = 25
+CROSSOVER_PROBABILITY = 0.8    # blend crossover, alpha 0.5
+MUTATION_PROBABILITY = 0.15    # gaussian, sigma 20, per-gene 0.3, then repaired
+TOURNAMENT_SIZE = 3
+
+# CNN
+NUM_EPOCHS = 50                # no early stopping
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
-NUM_EPOCHS = 50
+IMAGE_SIZE = (64, 128)
 
-# Hyperspectral Bands
-START_BAND = 0             # First band index
-END_BAND = 447             # Last band index (448 total bands)
+# Bootstrap
+BOOTSTRAP_RESAMPLES = 5000     # whole acquisitions, not crops
 ```
 
-## 🧩 Algorithm Workflow
+Every genetic operator is followed by a repair that guarantees three distinct
+in-range bands without reordering them: that is what keeps the population from
+collapsing, as it did in the 20 v1 studies.
 
-### 1. Initialization
-- Generate random population of band combinations (triplets for RGB)
-- Each individual represents 3 band indices from 448 available bands
+## 📊 Results
 
-### 2. Fitness Evaluation
-- Convert hyperspectral data to RGB using selected bands
-- Train ResNet50 with fine tuning on converted images
-- Use test accuracy as fitness score
+### Experiment 21 — the current protocol
 
-### 3. Evolution Process
-- **Selection:** Tournament selection of parent individuals
-- **Crossover:** Blend crossover to create offspring with clamped values
-- **Mutation:** Random band replacement with low probability
-- **Elitism:** Preserve best individuals across generations
+Winner: bands **366 / 262 / 225** = 891.02 / 747.50 / 697.05 nm.
 
-### 4. Convergence
-- Continue evolution for specified generations
-- Track and save best-performing band combinations
-- Output optimal RGB mapping and basic accuracy metrics
+| | weighted F1 | macro F1 | ordinal MAE | QWK |
+|---|---|---|---|---|
+| Validation (fitness of the winner) | 0.8701 | 0.8764 | 0.1875 | 0.8711 |
+| **Held-out test** (256 crops, 8 acquisitions, read once) | **0.7221** | 0.7224 | 0.5000 | 0.5815 |
 
-## 🏃 Usage
+Bootstrap over acquisitions: **0.722, 95 % CI [0.645, 0.848]** (5000 resamples).
+The interval is wide because it resamples 8 acquisitions, and two of them carry
+most of the spread: both score weighted F1 0.689 (accuracy 0.53) against 0.857
+to 0.951 (accuracy 0.75 to 0.91) for the other six.
 
-### Genetic Algorithm for Band Selection
+![Fitness evolution of experiment 21](out/figures/exp_21_fitness_evolution.png)
 
-Run the main optimization process (default: 5 experiments):
+Search: the initial population plus 25 generations (26 rows in `exp_21_ga_stats.csv`),
+383 unique candidates evaluated, 451 cache hits.
+Its files are `out/tables/exp_21_*` and `out/figures/exp_21_*`.
+
+### Experiments 1–20 — the earlier protocol
+
+Their tables are in `out/tables/exp_01_*` … `exp_20_*` and
+`out/tables/exp_01_10_metrics.csv`. **Their numbers are not comparable with
+experiment 21 and are not defensible** — see the v1 / v2 boundary above. They
+are kept because they are part of the record of the work.
+
+## 🧪 Tests
 
 ```bash
-uv run ga.py
+uv run pytest -q
 ```
 
-### Background Execution
-
-For long-running experiments with logging:
-
-```bash
-nohup uv run python -u ga.py > out/logs/experiment_1.log 2>&1 &
-```
-
-## 📊 Experimental Results
-
-### Detailed Results Tables
-
-#### Final CNN Performance (Best Individual)
-|train_loss|train_acc|test_loss   |test_acc            |
-|----------|---------|------------|--------------------|
-|0.1626397494612069|0.947198275862069|0.5444981418331736|0.83984375          |
-
-
-#### GA Evolution Statistics (Complete)
-|gen|nevals|avg         |std                 |min       |max       |best           |
-|---|------|------------|--------------------|----------|----------|---------------|
-|0  |20    |0.688671875 |0.06548184721320195 |0.5625    |0.79296875|[225, 101, 369]|
-|1  |19    |0.719140625 |0.05352987948843967 |0.53515625|0.78125   |[225, 101, 369]|
-|2  |13    |0.7365234375|0.028450669812729697|0.68359375|0.77734375|[225, 101, 369]|
-|3  |13    |0.7486328125|0.032548111736884495|0.65625   |0.78125   |[225, 101, 369]|
-|4  |18    |0.7244140625|0.06322184470536445 |0.53515625|0.7890625 |[225, 101, 369]|
-|5  |18    |0.76015625  |0.03352099680144521 |0.69140625|0.8125    |[178, 91, 315] |
-|6  |18    |0.7494140625|0.034149540276176754|0.6640625 |0.7890625 |[178, 91, 315] |
-|7  |16    |0.7310546875|0.04112290657072064 |0.6484375 |0.7890625 |[178, 91, 315] |
-|8  |14    |0.732421875 |0.036109050463708194|0.66015625|0.7890625 |[178, 91, 315] |
-|9  |17    |0.7373046875|0.034140602653024724|0.640625  |0.77734375|[178, 91, 315] |
-|10 |20    |0.7451171875|0.039757009595940675|0.65625   |0.79296875|[178, 91, 315] |
-|11 |17    |0.76875     |0.026133951068246453|0.68359375|0.80859375|[178, 91, 315] |
-|12 |17    |0.7564453125|0.03714584967327062 |0.6875    |0.80859375|[178, 91, 315] |
-|13 |17    |0.748046875 |0.036612629230097976|0.66015625|0.796875  |[178, 91, 315] |
-|14 |16    |0.748046875 |0.0560720383643053  |0.5859375 |0.8203125 |[139, 71, 197] |
-|15 |16    |0.7623046875|0.03920433235361838 |0.6796875 |0.80078125|[139, 71, 197] |
-|16 |15    |0.780078125 |0.030859375         |0.6796875 |0.80859375|[139, 71, 197] |
-|17 |19    |0.7625      |0.03594174567312014 |0.67578125|0.80078125|[139, 71, 197] |
-|18 |18    |0.7716796875|0.02571828841285358 |0.7265625 |0.80078125|[139, 71, 197] |
-|19 |17    |0.766796875 |0.03125             |0.6875    |0.80078125|[139, 71, 197] |
-|20 |16    |0.7708984375|0.02671275252477065 |0.72265625|0.80078125|[139, 71, 197] |
-|21 |18    |0.7611328125|0.030715711570975045|0.68359375|0.80078125|[139, 71, 197] |
-|22 |15    |0.77421875  |0.024609375         |0.7109375 |0.80078125|[139, 71, 197] |
-|23 |18    |0.7794921875|0.02027027027027027 |0.734375  |0.80078125|[139, 71, 197] |
-|24 |16    |0.77734375  |0.017578125         |0.734375  |0.80078125|[139, 71, 197] |
-|25 |18    |0.81640625  |0.0                 |0.81640625|0.81640625|[139, 71, 197] |
-|26 |15    |0.8140625   |0.013020833333333333|0.78515625|0.8203125 |[139, 71, 197] |
-|27 |17    |0.810546875 |0.015625            |0.76171875|0.8203125 |[139, 71, 197] |
-|28 |19    |0.814453125 |0.013671875         |0.78515625|0.8203125 |[139, 71, 197] |
-|29 |17    |0.8125      |0.01171875          |0.79296875|0.8203125 |[139, 71, 197] |
-|30 |14    |0.814453125 |0.01171875          |0.796875  |0.8203125 |[139, 71, 197] |
-|31 |19    |0.806640625 |0.022265625         |0.76953125|0.8203125 |[139, 71, 197] |
-|32 |19    |0.8193359375|0.01139322916666667 |0.8046875 |0.8359375 |[139, 71, 197] |
-|33 |18    |0.8142578125|0.015039062499999999|0.7890625 |0.8359375 |[139, 71, 197] |
-|34 |16    |0.8203125   |0.0078125           |0.8046875 |0.8359375 |[139, 71, 197] |
-|35 |16    |0.82421875  |0.00390625          |0.81640625|0.8359375 |[139, 71, 197] |
-|36 |17    |0.8291015625|0.007324218749999999|0.8125    |0.8359375 |[139, 71, 197] |
-|37 |17    |0.827734375 |0.009765625         |0.8046875 |0.8359375 |[139, 71, 197] |
-|38 |17    |0.82734375  |0.005859375         |0.8125    |0.8359375 |[139, 71, 197] |
-|39 |17    |0.8291015625|0.009765625         |0.8046875 |0.8359375 |[139, 71, 197] |
-|40 |17    |0.8306640625|0.009765625         |0.8046875 |0.8359375 |[139, 71, 197] |
-|41 |19    |0.8291015625|0.01171875          |0.8046875 |0.8359375 |[139, 71, 197] |
-|42 |16    |0.8306640625|0.013671875         |0.80078125|0.8359375 |[139, 71, 197] |
-|43 |16    |0.8359375   |0.01171875          |0.80078125|0.83984375|[126, 78, 186] |
-|44 |20    |0.830078125 |0.01691455866766482 |0.80078125|0.83984375|[126, 78, 186] |
-|45 |16    |0.8359375   |0.01171875          |0.80078125|0.83984375|[126, 78, 186] |
-|46 |16    |0.83828125  |0.006810779599282302|0.80859375|0.83984375|[126, 78, 186] |
-|47 |16    |0.8359375   |0.01171875          |0.80078125|0.83984375|[126, 78, 186] |
-|48 |19    |0.83984375  |0.0                 |0.83984375|0.83984375|[126, 78, 186] |
-|49 |16    |0.8310546875|0.015716286073663165|0.80078125|0.83984375|[126, 78, 186] |
-|50 |18    |0.83203125  |0.015625            |0.80078125|0.83984375|[126, 78, 186] |
-
-![Fitness Evolution of the best experiment](best_fitness_evolution.png)
-
-### Visualization
-![CNN Training Results](out/figures/exp_001_cnn_results_126_78_186.png)
-*Loss and accuracy curves for the best band combination [126, 78, 186] over 50 training epochs*
-
+`tests/test_protocol.py` watches what makes the result defensible — which crops
+each step sees, which values come out, what is refused — and nothing about how
+it is written. It needs no GPU and no `data/`: the reference manifests it checks
+against are versioned in `tests/data/`.
 
 ## 📋 License
 
-This project is part of ongoing research. Please contact me for usage permissions and cite appropriately in academic work.
+This project is part of ongoing research. Please contact me for usage
+permissions and cite appropriately in academic work.
 
 ## 📬 Contact
 
-For research collaboration or technical questions, please open an issue with detailed information.
-
+For research collaboration or technical questions, please open an issue with
+detailed information.

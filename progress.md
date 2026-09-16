@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Last Updated:** 2026-09-16 (sesión 7)
+**Last Updated:** 2026-09-16 (sesión 8)
 **Branch:** feature/protocolo-80-20 (creada desde `feature/experiments`@9075d9b, que contiene b7f1fc9)
-**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01–08 `done`**; ninguno `in-progress`. Esta sesión cerró **protocolo-80-20/08** (intervalo bootstrap por captura): `bootstrap.py 21` da `0.722` con IC 95 % `[0.645, 0.848]`, el número que cita la memoria. Next pick: protocolo-80-20/09 – `run.sh`, README, figura de fitness, `init.sh` y `CLAUDE.md` (`ready-for-agent`, su bloqueo 08 está `done`); ojo a que 08 ya adelantó la línea de `bootstrap.py` en el Layout de `CLAUDE.md` y su import en `init.sh`.
+**Active Feature:** `protocolo-80-20` – 17 tickets (`.scratch/protocolo-80-20/issues/01..17`): fase 1 (01–10, el porte verificable bit a bit) y fase 2 (11–17, las mejoras de la corrida siguiente, apagadas por defecto). **01–09 `done`**; ninguno `in-progress`. Esta sesión cerró **protocolo-80-20/09** (`run.sh`, README, figura de fitness, `init.sh` y `CLAUDE.md`): `./run.sh 99 --population 4 --generations 1 --epochs 1` encadena los cuatro pasos y `plot_fitness_evolution.py 21` redibuja la curva byte a byte sin GPU. Next pick: protocolo-80-20/10 – `check_data.py` (`ready-for-agent`, su bloqueo 03 está `done`), el último de la fase 1; luego empieza la fase 2 por el 11.
 
 **No empieces por repo-health/02.** La feature `protocolo-80-20` reescribe `ga.py` entero, así que 02 (restaurar el import de `engine2`), 03 (overrides por entorno) y 04 (tests de los operadores viejos) quedan sin objeto. Están pendientes de triaje por el autor. `repo-health/05` sigue siendo válido e independiente; `06` lo absorbe el README nuevo.
 
@@ -22,20 +22,22 @@
 
 ### What's In Progress
 
-- [ ] `protocolo-80-20` fase 1: 01–08 `done`; tickets 09 y 10 en `ready-for-agent`. 10 (`check_data.py`) solo depende de 03, así que 09 y 10 pueden ir en cualquier orden.
+- [ ] `protocolo-80-20` fase 1: 01–09 `done`; queda el ticket 10 (`check_data.py`) en `ready-for-agent`, que solo depende de 03.
 - [ ] `protocolo-80-20` fase 2: tickets 11–17 en `ready-for-agent`, todos detrás de la fase 1. 11 (capturas flojas del test, 0 h) depende de 08 y va primero; 12 (validación equilibrada por recortes), 13 (punto de inyección de checkpoint, delta 0.00e+00) y 16 (`FINAL_SEEDS`) dependen de 09; 14 (`pretrain.py` SimCLR) de 13; 15 (puerta pareada, ~4,5 h) de 12 y 14; 17 (re-verificar los valores por defecto y entregar el comando de la corrida) de 12, 13, 14 y 16. Cada constante de fase 2 tiene por defecto el comportamiento del 10 Sep.
 
 ### What's Next
 
-1. protocolo-80-20/09 (`run.sh`, README, figura de fitness, `init.sh` y `CLAUDE.md`). `run.sh N` encadena split → `ga.py N` → `train_final.py N` → `bootstrap.py N`; los cuatro scripts ya existen. El smoke de su checklist (`./run.sh 99 --population 4 --generations 1 --epochs 1`) sí entrena, así que hay que borrar `exp_99_*` después.
-2. Triar `repo-health/02,03,04,06` (probablemente `wontfix`: la feature nueva los deja sin objeto; 06 lo absorbe protocolo-80-20/09).
-3. Seguir la cadena 08 → 09; el replay (06) y el modelo final (07) ya ocupan el número 21, la primera corrida real es la 22.
+1. protocolo-80-20/10 (`check_data.py`): es el único que queda de la fase 1 y el que arregla el import roto que `init.sh` esquiva compilando sin importar.
+2. Triar `repo-health/02,03,04,06` (probablemente `wontfix`: la feature nueva los deja sin objeto; **06 ya está absorbido** por el README que reescribió el ticket 09).
+3. La corrida real es `nohup ./run.sh 22 > out/logs/run_22.log 2>&1 &` (horas en la A100, GPU 1 por defecto). Antes conviene decidir si entra algo de la fase 2 (11–17), porque cambiar constantes después obliga a un número nuevo.
 
 ## Blockers / Risks
 
+- [ ] **`uv.lock` se ensucia en cada `./init.sh` completo**: el lock registra `select-best-bands` en `0.2.0` y `pyproject.toml` dice `0.1.0`, así que `uv sync` reescribe esa línea y `git status` sale sucio. Preexistente (ticket 01), sin ticket propio todavía; lo he revertido con `git checkout -- uv.lock`. Decisión de Pablo: subir `pyproject.toml` a 0.2.0 o recommitear el lock.
+
 - [ ] `check_data.py` sigue sin importar tras el ticket 03 (`HypercubeDataset` desapareció); lo reescribe el ticket 10. `init.sh` lo compila pero no lo importa, así que la puerta sigue verde. `ga.py` ya está entero y `init.sh` vuelve a importarlo.
 - [ ] `data/` is gitignored; `init.sh` warns instead of failing when it is absent so code-only work is possible on machines without the dataset.
-- [ ] A default `ga.py` run is 50 generations × up to 25 individuals × up to 50 epochs on an A100. Never launch one as "verification".
+- [ ] Una corrida por defecto es la población inicial de 20 más 25 generaciones, cada individuo 50 épocas en la A100: horas. Nunca se lanza como «verificación»; para eso está `./run.sh 99 --population 4 --generations 1 --epochs 1`.
 
 ## Decisions Made
 
@@ -48,6 +50,8 @@
 - **Se conserva la derivación exacta de la semilla por candidato**: permite verificar el port reproduciendo bit a bit el resultado del 10 Sep y replicar la búsqueda sin GPU desde los 383 candidatos ya evaluados.
 
 ## Files Modified This Session
+
+- protocolo-80-20/09: `run.sh` (reescrito: la cadena de los cuatro pasos, `set -euo pipefail`, `CUDA_VISIBLE_DEVICES` por defecto 1, enrutado de flags por paso, tres logs y sus refusals), `plot_fitness_evolution.py` (reescrito: `read_generations`, `winner_wavelengths`, `plot_command` y CLI por número de experimento; reutiliza `ga.plot_fitness_evolution`), `README.md` (reescrito entero), `CLAUDE.md` (Layout, Invariants y Verification), `ga.py` (`STATS_FIELDS` como constante de módulo), `init.sh` (importa `plot_fitness_evolution`), `tests/test_protocol.py` (+5 tests). Nada nuevo en `out/`: el smoke del 99 se borró y la figura del 21 se reescribió idéntica.
 
 - protocolo-80-20/08: `bootstrap.py` (nuevo: `TestPredictions`, `FinalResult`, `Interval`, `grouped_resamples`, `bootstrap_interval`, `per_acquisition_scores`, `published_triplets`/`final_bands`, `read_predictions`, `load_final_result`, la guarda y el CLI), `ga.py` (`band_suffix` y `refuse_a_rerun_that_would_not_reproduce` compartidas), `train_final.py` (usa las dos, ya no duplica la guarda), `config.py` (`BOOTSTRAP_CONFIDENCE_LEVEL`, `BOOTSTRAP_PERCENTILES`), `tests/test_protocol.py` (+12 tests), `init.sh` (compila e importa `bootstrap`), `CLAUDE.md` (Layout). Nuevo en `out/`: `tables/exp_21_bootstrap_366_262_225.json`.
 
@@ -64,6 +68,8 @@
 - protocolo-80-20/01: `pyproject.toml`, `uv.lock`, `.python-version`, `.gitignore`, `config.py` (nuevo), `init.sh`, `CLAUDE.md` (Layout, Invariants, Verification); borrados `cnn/train.py`, `cnn/model_info.py`, `cnn/util/helper_functions.py`, `train_dataset.csv`, `test_dataset.csv`, `run.log`; `tests/data/*.csv` pasan a estar versionados.
 
 ## Evidence of Completion
+
+- [x] **protocolo-80-20/09** (16 Sep): **un solo comando reproduce la cadena entera**. `CUDA_VISIBLE_DEVICES=1 ./run.sh 99 --population 4 --generations 1 --epochs 1` hizo split → `ga.py` → `train_final.py` → `bootstrap.py` en ~8 min y dejó los diez `exp_99_*` de `out/tables`, las tres figuras, el `.pt` y los tres logs; borrado todo, `git status --short out/` vacío. El `split_dataset.py` de la cadena reescribe la partición y sigue idéntica a la referencia versionada. `plot_fitness_evolution.py 21` redibuja `exp_21_fitness_evolution.png` **byte a byte** igual a la que escribió `ga.py` (`cmp` vacío), leyendo solo `ga_stats.csv` + `ga_summary.json`, y rechaza en una línea las columnas de los experimentos 1–20. `./init.sh` completo verde con **88 tests** (83 antes). README y `CLAUDE.md` describen el protocolo nuevo y la frontera del 21; `repo-health/06` queda absorbido. Tras `/code-review`: dos errores de hecho del README corregidos (F1 contra exactitud en las capturas flojas; «26 generaciones» = población inicial + 25), `rm -f` en la limpieza, las columnas del redibujo derivadas de `ga.STATS_FIELDS`, y `--bands` incompleto refutado en una línea en vez de con un «unbound variable».
 
 - [x] **protocolo-80-20/08** (16 Sep): **el intervalo del 10 de septiembre sale exacto y sin GPU**. `bootstrap.py 21` (sin `--bands`: encuentra el único modelo final del 21 por sus `exp_21_final_metrics_*.json`) imprime `weighted F1 0.722  95% CI [0.645, 0.848]  (5000 resamples of 8 acquisitions, seed 1729)` y escribe `out/tables/exp_21_bootstrap_366_262_225.json` con `0.722142952443074` y `[0.6446439130060168, 0.847819167724381]`. El `macro_f1` que recalcula sobre las predicciones coincide dígito a dígito con el del `final_metrics` del ticket 07. Repetirlo da `diff` vacío; `--seed 99` y `bootstrap.py 22` se rechazan con salida 1. Las dos capturas flojas quedan las primeras de la tabla (0,689 / exactitud 0,53 las dos, frente a 0,86–0,95 en las otras seis): eso es lo que come el ticket 11. 83 tests verdes (71 antes), 12 nuevos. Tras `/code-review`: la guarda de `out/` se unifica en `ga.py` (la tenían duplicada `train_final.py` y `bootstrap.py`), pasa a vigilar también el `weighted_f1` (unas predicciones cambiadas ya no sobrescriben un intervalo en silencio), nacen `TestPredictions` y `FinalResult`, y `BOOTSTRAP_CONFIDENCE_LEVEL` / `BOOTSTRAP_PERCENTILES` se mudan a `config.py`. La salida quedó byte a byte idéntica tras los cuatro cambios.
 
@@ -82,6 +88,9 @@
 - [x] `SKIP_SYNC=1 ./init.sh` verde de principio a fin (2026-09-15, tras protocolo-80-20/01). Avisa (no falla) de que falta `data/evaluation_partitions.csv`, que escribe el ticket 02, y salta pytest porque aún no hay `tests/test_*.py`.
 
 ## Notes for Next Session
+
+- **`run.sh` enruta los flags por paso, no los reenvía a ciegas**: `--population`/`--generations`/`--no-evaluate` van a `ga.py`, `--epochs` a `ga.py` y `train_final.py`, `--bands` a `train_final.py` y `bootstrap.py`, `--resamples`/`--seed` a `bootstrap.py`. Un flag que ningún paso acepta corta la cadena antes de entrenar nada. `ga.py --predictions` no se enruta a propósito: solo lo usa `--evaluate`, que no forma parte de la cadena.
+- **Importar el `plot_fitness_evolution.py` viejo tenía efectos secundarios**: su cuerpo de módulo dibujaba al importarse, así que la primera pasada de pytest reescribió `best_fitness_evolution.png` y creó `number_of_evaluations.png` en la raíz. Restaurados con `git checkout`. El nuevo no hace nada al importarse.
 
 - **`out/` tiene dos guardas, no una** (ticket 07): `train_final.py` rechaza un número que pertenece a un protocolo anterior (los experimentos 1–20, que tienen `classification_report` y `ga_stats` pero ni cache ni summary) **y** rechaza reescribir su propio resultado con otros ajustes (bandas, semilla, épocas, batch, lr, tamaño de imagen, dispositivo) comparándolos con el `exp_NN_final_metrics_*.json` ya escrito. Repetir la misma corrida sí está permitido: escribe los mismos bytes y es como se vuelve a verificar el registro.
 
