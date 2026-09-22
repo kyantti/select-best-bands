@@ -54,7 +54,13 @@ VALIDATION_BALANCE_TARGET_RATIO = 1.5
 # --- Seeds ----------------------------------------------------------------
 STUDY_SEED = 23  # seeds `random` right before the GA population is created
 CANDIDATE_SEED = 1729  # goes into the per-candidate derived training seed
-FINAL_SEED = 2718  # the single final-model training run
+# The training seeds of the final model: one final model, and one read of the
+# held-out test set, per seed.  With the single 10 Sep seed every file
+# `train_final.py` writes is that run's, byte for byte.  With several, each seed
+# writes its own artifacts under a `_seed<N>` suffix plus a summary of the mean
+# and the spread, and every one of them declares how many times the test set was
+# read — a list of ten seeds can never be reported as a single held-out read.
+FINAL_SEEDS = [2718]
 
 # --- Genetic algorithm ----------------------------------------------------
 BANDS_PER_CANDIDATE = 3

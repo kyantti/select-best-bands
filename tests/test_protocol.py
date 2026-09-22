@@ -9,7 +9,9 @@ import csv
 import dataclasses
 import hashlib
 import json
+import math
 import random
+import statistics
 from pathlib import Path
 
 import numpy as np
@@ -1097,10 +1099,14 @@ def final_dataset(tmp_path, monkeypatch):
     return tmp_path
 
 
-def fake_final_model(epochs=2):
-    """What an injected trainer hands back: a state dict and one row per epoch."""
+def fake_final_model(epochs=2, seed=0):
+    """What an injected trainer hands back: a state dict and one row per epoch.
+
+    The seed is written into the weights, so a test can tell which seed's model
+    the evaluator was handed without the evaluator being told the seed.
+    """
     return train_final.FinalModel(
-        state={"fc.bias": torch.zeros(config.NUM_CLASSES)},
+        state={"fc.bias": torch.full((config.NUM_CLASSES,), float(seed))},
         history=[
             {"epoch": epoch, "train_loss": 1.0 / epoch, "train_accuracy": 0.25 * epoch}
             for epoch in range(1, epochs + 1)
@@ -1109,7 +1115,14 @@ def fake_final_model(epochs=2):
 
 
 def run_final(
-    experiment=21, bands=FINAL_BANDS, *, trainer=None, evaluator=None, epochs=2, checkpoint=None
+    experiment=21,
+    bands=FINAL_BANDS,
+    *,
+    trainer=None,
+    evaluator=None,
+    epochs=2,
+    checkpoint=None,
+    seeds=None,
 ):
     """One final-model run whose training and inference are replaced by fakes."""
     return train_final.final_command(
@@ -1117,10 +1130,21 @@ def run_final(
         bands=bands,
         epochs=epochs,
         checkpoint=checkpoint,
+        seeds=seeds,
         trainer=trainer if trainer is not None else lambda context: fake_final_model(epochs),
         evaluator=evaluator if evaluator is not None else (lambda context: [0, 3]),
         verbose=False,
     )
+
+
+def seeded_trainer(epochs=2):
+    """A trainer that stamps the seed it was given into the weights it returns."""
+    return lambda context: fake_final_model(epochs, context.seed)
+
+
+def predictions_by_seed(table):
+    """An evaluator that answers by the seed stamped into the weights it is handed."""
+    return lambda context: table[int(context.state["fc.bias"][0].item())]
 
 
 def test_final_trains_on_every_train_crop_and_never_sees_a_test_crop(final_dataset):
@@ -1131,7 +1155,7 @@ def test_final_trains_on_every_train_crop_and_never_sees_a_test_crop(final_datas
     (context,) = trained
     # Fit and validation together: the inner split did its job during the search.
     assert [item.cropped_hypercube_id for item in context.training] == ["fit-a", "fit-b", "val-a"]
-    assert context.seed == config.FINAL_SEED
+    assert context.seed == config.FINAL_SEEDS[0]
     # There is no test crop reachable from what the trainer is handed.
     assert not hasattr(context, "test")
 
@@ -1188,7 +1212,7 @@ def test_final_writes_its_tables_and_figures_with_the_bands_in_their_names(final
     metrics = json.loads(paths["metrics"].read_text())
     assert metrics["selected_band_indices"] == [3, 0, 2]
     assert metrics["selected_wavelengths_nm"] == [550.0, 400.0, 500.0]
-    assert metrics["seed"] == config.FINAL_SEED
+    assert metrics["seed"] == config.FINAL_SEEDS[0]
     assert metrics["test_evaluation_count"] == 1
     assert metrics["train_cropped_hypercube_count"] == 3
     assert metrics["test_cropped_hypercube_count"] == 2
@@ -1250,15 +1274,236 @@ def test_final_refuses_a_rerun_that_would_not_reproduce_the_recorded_result(fina
     assert train_final.final_paths(99, FINAL_BANDS)["metrics"].read_text() == recorded
 
 
+# --- Several final seeds ----------------------------------------------------
+
+# Three seeds that score differently on the two held-out crops, so a summary
+# that collapsed them or paired a model with another model's predictions would
+# show up as the wrong mean, the wrong spread or the wrong row.
+SEEDED_PREDICTIONS = {1: [3, 3], 2: [0, 3], 3: [0, 0]}
+
+
+def run_seeded_final(experiment=99, seeds=(1, 2, 3), epochs=2):
+    """A multi-seed final run whose fake trainer and evaluator agree on the seed."""
+    return run_final(
+        experiment=experiment,
+        seeds=list(seeds),
+        epochs=epochs,
+        trainer=seeded_trainer(epochs),
+        evaluator=predictions_by_seed(SEEDED_PREDICTIONS),
+    )
+
+
+def seeded_metrics(seed, experiment=99):
+    """What the run recorded for one seed."""
+    return json.loads(train_final.final_paths(experiment, FINAL_BANDS, seed)["metrics"].read_text())
+
+
+def test_final_seeds_default_to_the_single_10_sep_seed():
+    assert config.FINAL_SEEDS == [2718]
+
+
+def test_final_seeds_come_from_config_when_the_caller_names_none(final_dataset):
+    trained = []
+
+    run_final(trainer=lambda context: (trained.append(context.seed), fake_final_model())[1])
+
+    assert trained == config.FINAL_SEEDS
+
+
+def test_final_seeds_of_one_write_the_phase_one_files_and_declare_one_read(final_dataset):
+    """A single-element list is the 10 Sep run: same names, same claim, no summary."""
+    run_final(seeds=[config.FINAL_SEEDS[0]])
+
+    paths = train_final.final_paths(21, FINAL_BANDS)
+    assert all(path.exists() for path in paths.values())
+    metrics = json.loads(paths["metrics"].read_text())
+    assert metrics["test_evaluation_count"] == 1
+    assert metrics["seed"] == config.FINAL_SEEDS[0]
+    assert "final_seeds" not in metrics
+    assert not train_final.final_summary_path(21, FINAL_BANDS).exists()
+
+
+def test_final_seeds_of_one_write_the_same_bytes_the_default_list_writes(final_dataset):
+    # The figures are left out: a PNG carries the library that drew it, not a result.
+    def written():
+        return {
+            name: path.read_bytes()
+            for name, path in train_final.final_paths(99, FINAL_BANDS).items()
+            if path.suffix != ".png"
+        }
+
+    run_final(experiment=99)
+    default = written()
+
+    run_final(experiment=99, seeds=[config.FINAL_SEEDS[0]])
+
+    assert written() == default
+
+
+def test_final_seeds_write_one_model_and_one_table_set_per_seed(final_dataset):
+    run_seeded_final()
+
+    for seed in (1, 2, 3):
+        paths = train_final.final_paths(99, FINAL_BANDS, seed)
+        assert all(path.exists() for path in paths.values())
+        assert paths["metrics"].name == f"exp_99_final_metrics_3_0_2_seed{seed}.json"
+        assert paths["model"].name == f"exp_99_model_3_0_2_seed{seed}.pt"
+        assert seeded_metrics(seed)["seed"] == seed
+    # The unsuffixed names belong to a single-seed run and stay unwritten.
+    assert not train_final.final_paths(99, FINAL_BANDS)["metrics"].exists()
+
+
+def test_final_seeds_declare_the_read_count_in_every_artifact(final_dataset):
+    """Three seeds read the test set three times, and no file may say otherwise."""
+    run_seeded_final()
+
+    for seed in (1, 2, 3):
+        metrics = seeded_metrics(seed)
+        assert metrics["test_evaluation_count"] == 3
+        assert metrics["final_seeds"] == [1, 2, 3]
+    summary = json.loads(train_final.final_summary_path(99, FINAL_BANDS).read_text())
+    assert summary["test_evaluation_count"] == 3
+    assert summary["final_seeds"] == [1, 2, 3]
+
+
+def test_final_seeds_summary_reports_the_mean_and_the_spread(final_dataset):
+    run_seeded_final()
+
+    summary = json.loads(train_final.final_summary_path(99, FINAL_BANDS).read_text())
+    per_seed = [seeded_metrics(seed)["metrics"] for seed in (1, 2, 3)]
+    for name in train_final.SUMMARY_METRICS:
+        values = [metrics[name] for metrics in per_seed]
+        across = summary["metrics"][name]
+        assert [summary["per_seed"][str(seed)][name] for seed in (1, 2, 3)] == pytest.approx(
+            values, nan_ok=True
+        )
+        # Both held-out crops of this fixture are one class, so the kappa has no
+        # value; the point here is that it does not take the other three with it.
+        if not all(math.isfinite(value) for value in values):
+            assert all(math.isnan(across[key]) for key in ("mean", "std"))
+            continue
+        assert across["mean"] == pytest.approx(statistics.fmean(values))
+        assert across["std"] == pytest.approx(statistics.stdev(values))
+        assert across["min"] == min(values)
+        assert across["max"] == max(values)
+    # The three seeds did not all score the same, so a spread of zero is a bug.
+    assert summary["metrics"]["weighted_f1"]["std"] > 0
+
+
+@pytest.mark.parametrize("values", ([0.5, 0.75], [1.0, 2.0, 6.0], [0.4, 0.4, 0.4, 0.4]))
+def test_final_seeds_spread_is_the_mean_and_the_sample_deviation(values):
+    across = train_final.spread_over_seeds(values)
+
+    assert across["mean"] == pytest.approx(statistics.fmean(values))
+    assert across["std"] == pytest.approx(statistics.stdev(values))
+    assert (across["min"], across["max"]) == (min(values), max(values))
+
+
+def test_final_seeds_save_every_model_before_the_test_set_is_opened(final_dataset, monkeypatch):
+    """The claim of ticket 07, once per seed: no held-out crop until all are frozen."""
+    models = [train_final.final_paths(99, FINAL_BANDS, seed)["model"] for seed in (1, 2, 3)]
+    opened = []
+    load_crops = train_final.load_partition_crops
+
+    def watched(manifest_path, partition, wavelengths, *, verbose):
+        opened.append((partition, [path.exists() for path in models]))
+        return load_crops(manifest_path, partition, wavelengths, verbose=verbose)
+
+    monkeypatch.setattr(train_final, "load_partition_crops", watched)
+
+    run_seeded_final()
+
+    assert opened == [("train", [False] * 3), ("test", [True] * 3)]
+
+
+def test_final_seeds_pair_each_model_with_its_own_predictions(final_dataset):
+    run_seeded_final()
+
+    for seed, predicted in ((1, ["C3", "C3"]), (2, ["C0", "C3"]), (3, ["C0", "C0"])):
+        path = train_final.final_paths(99, FINAL_BANDS, seed)["predictions"]
+        rows = list(csv.DictReader(path.open()))
+        assert [row["predicted"] for row in rows] == predicted
+
+
+@pytest.mark.parametrize("seeds", ([], [1, 1, 2]))
+def test_final_seeds_refuse_a_list_that_is_empty_or_repeats(final_dataset, seeds):
+    with pytest.raises(ValueError, match="seed"):
+        run_final(experiment=99, seeds=seeds)
+
+
+def test_final_seeds_refuse_a_rerun_that_would_restate_the_read_count(final_dataset):
+    """Rewriting seed 1's file under a shorter list would turn three reads into two."""
+    run_seeded_final()
+    recorded = train_final.final_paths(99, FINAL_BANDS, 1)["metrics"].read_text()
+
+    with pytest.raises(ValueError, match="test_evaluation_count"):
+        run_seeded_final(seeds=(1, 2))
+
+    assert train_final.final_paths(99, FINAL_BANDS, 1)["metrics"].read_text() == recorded
+
+
+def test_final_seeds_refuse_before_a_single_model_is_trained(final_dataset):
+    """The guard runs over the whole list first: a refusal leaves nothing behind."""
+    run_seeded_final(seeds=(1,))
+    trained = []
+
+    with pytest.raises(ValueError, match="different epochs"):
+        run_final(
+            experiment=99,
+            seeds=[1],
+            epochs=1,
+            trainer=lambda context: (trained.append(context.seed), fake_final_model(1))[1],
+            evaluator=predictions_by_seed(SEEDED_PREDICTIONS),
+        )
+
+    assert trained == []
+
+
+def test_final_seeds_refuse_several_beside_a_single_seed_result(final_dataset):
+    """One experiment number is one claim about how often the test set was read."""
+    run_final(experiment=99)
+
+    with pytest.raises(ValueError, match="single-seed result"):
+        run_seeded_final()
+
+    assert not train_final.final_paths(99, FINAL_BANDS, 1)["metrics"].exists()
+
+
+def test_final_seeds_refuse_one_beside_a_multi_seed_result(final_dataset):
+    run_seeded_final()
+
+    with pytest.raises(ValueError, match="single-seed run beside it"):
+        run_final(experiment=99)
+
+    assert not train_final.final_paths(99, FINAL_BANDS)["metrics"].exists()
+
+
+@pytest.mark.parametrize("values", ([math.nan, 0.5, 0.3], [0.5, math.nan, 0.3], [0.5, 0.3, math.nan]))
+def test_final_seeds_spread_of_an_undefined_metric_is_undefined_whole(values):
+    """One seed without a kappa must not let the other two answer min and max."""
+    across = train_final.spread_over_seeds(values)
+
+    assert all(math.isnan(across[key]) for key in ("mean", "std", "min", "max"))
+
+
+def test_final_seeds_replay_the_same_list_and_rewrite_the_same_bytes(final_dataset):
+    run_seeded_final()
+    before = train_final.final_summary_path(99, FINAL_BANDS).read_text()
+
+    run_seeded_final()
+
+    assert train_final.final_summary_path(99, FINAL_BANDS).read_text() == before
+
+
 # --- The grouped bootstrap interval -----------------------------------------
 
 
 BOOTSTRAP_BANDS = (3, 0, 2)
 
 
-def write_test_predictions(experiment, bands, rows):
+def write_test_predictions(experiment, bands, rows, seed=None):
     """A `train_final.py` predictions file: one row per held-out crop."""
-    path = train_final.final_paths(experiment, bands)["predictions"]
+    path = train_final.final_paths(experiment, bands, seed)["predictions"]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as target:
         writer = csv.DictWriter(
@@ -1271,9 +1516,9 @@ def write_test_predictions(experiment, bands, rows):
     return path
 
 
-def write_final_metrics(experiment, bands, nanometres=(550.0, 400.0, 500.0)):
+def write_final_metrics(experiment, bands, nanometres=(550.0, 400.0, 500.0), seed=None):
     """The part of `exp_NN_final_metrics_*.json` the bootstrap reads."""
-    path = train_final.final_paths(experiment, bands)["metrics"]
+    path = train_final.final_paths(experiment, bands, seed)["metrics"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -1432,6 +1677,26 @@ def test_bootstrap_asks_for_bands_when_the_experiment_has_two_final_models(boots
 
     run_bootstrap(bands=other)
     assert bootstrap.bootstrap_paths(21, other)["bootstrap"].exists()
+
+
+def test_bootstrap_lists_one_triplet_however_many_seeds_trained_it(bootstrap_dataset):
+    """Three metrics files of one triplet are one triplet, not three to choose from."""
+    for seed in (1, 2, 3):
+        write_final_metrics(21, BOOTSTRAP_BANDS, seed=seed)
+
+    assert bootstrap.published_triplets(21) == [BOOTSTRAP_BANDS]
+
+
+def test_bootstrap_refuses_a_triplet_trained_under_several_seeds(bootstrap_dataset):
+    """One interval per seed or one over the pooled predictions is nobody's decision yet."""
+    train_final.final_paths(21, BOOTSTRAP_BANDS)["predictions"].unlink()
+    train_final.final_paths(21, BOOTSTRAP_BANDS)["metrics"].unlink()
+    for seed in (1, 2, 3):
+        write_test_predictions(21, BOOTSTRAP_BANDS, BOOTSTRAP_ROWS, seed=seed)
+        write_final_metrics(21, BOOTSTRAP_BANDS, seed=seed)
+
+    with pytest.raises(ValueError, match="under 3 seeds"):
+        run_bootstrap()
 
 
 def test_bootstrap_of_a_triplet_with_no_predictions_names_the_missing_file(bootstrap_dataset):

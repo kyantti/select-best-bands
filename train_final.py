@@ -1,13 +1,21 @@
-"""Train the final model on every train crop, then read the test set once.
+"""Train the final model on every train crop, then read the test set once per seed.
 
     uv run python train_final.py N                  # the winner of experiment N
     uv run python train_final.py N --bands R G B    # a triplet named by hand
+    uv run python train_final.py N --seeds 1 2 3    # one final model per seed
 
-The order of this script is the claim it makes.  The model is fitted on all 28
-train Acquisitions and saved to disk before a single held-out crop is opened,
-and the test crops are then predicted in one ordered pass.  Nothing that
-happens after the save can reach back into training, so the test metrics are a
-single held-out measurement rather than a number the run was tuned towards.
+The order of this script is the claim it makes.  Every model is fitted on all
+28 train Acquisitions and saved to disk before a single held-out crop is
+opened, and the test crops are then predicted in one ordered pass per model.
+Nothing that happens after the save can reach back into training, so the test
+metrics are held-out measurements rather than numbers the run was tuned towards.
+
+`config.FINAL_SEEDS` is a list because the noise of training and the noise of
+the split are different things.  With its default single seed this is the 10
+Sep run, file for file; with several it writes one model and one set of tables
+per seed plus a summary of their mean and spread, and every artifact declares
+how many times the held-out set was read.  That count is the length of the
+list: ten seeds are ten reads, and no file of such a run may claim one.
 
 The training loop, the inference pass and the frozen normalization are copied
 from fig-aflatoxin's final stage; the experiment-numbered outputs are this
@@ -18,6 +26,8 @@ epoch loop has no evaluation half, because there is no loader to evaluate on.
 import argparse
 import csv
 import json
+import math
+import statistics
 import sys
 import time
 from dataclasses import dataclass
@@ -205,10 +215,16 @@ def winner_bands(experiment: int) -> Candidate:
 # --- The outputs ----------------------------------------------------------
 
 
-def final_paths(experiment: int, bands: Candidate) -> dict[str, Path]:
-    """Every file one final model owns.  Another triplet writes to other names."""
+def final_paths(experiment: int, bands: Candidate, seed: int | None = None) -> dict[str, Path]:
+    """Every file one final model owns.  Another triplet writes to other names.
+
+    `seed` is the seed of a run that trained several models, and names the
+    files of that one: a list of seeds has to keep its models apart.  The
+    single-seed run passes None and writes the names of the 10 Sep run, so an
+    artifact of this protocol is never renamed by a feature it did not use.
+    """
     prefix = f"{ga.experiment_prefix(experiment)}_"
-    suffix = ga.band_suffix(bands)
+    suffix = ga.band_suffix(bands) + ("" if seed is None else f"_seed{int(seed)}")
     return {
         "model": config.MODELS_DIR / f"{prefix}model_{suffix}.pt",
         "metrics": config.TABLES_DIR / f"{prefix}final_metrics_{suffix}.json",
@@ -218,6 +234,63 @@ def final_paths(experiment: int, bands: Candidate) -> dict[str, Path]:
         "confusion_figure": config.FIGURES_DIR / f"{prefix}confusion_matrix_{suffix}.png",
         "history_figure": config.FIGURES_DIR / f"{prefix}training_history_{suffix}.png",
     }
+
+
+def final_summary_path(experiment: int, bands: Candidate) -> Path:
+    """Where a run of several seeds says what the spread of its seeds was.
+
+    It belongs to the triplet rather than to any one seed, and a single-seed
+    run does not write it: with one model there is nothing to average.
+    """
+    prefix = ga.experiment_prefix(experiment)
+    return config.TABLES_DIR / f"{prefix}_final_summary_{ga.band_suffix(bands)}.json"
+
+
+def resolve_seeds(seeds=None) -> list[int]:
+    """The training seeds of this run, checked before anything is trained.
+
+    Raises:
+        ValueError: If the list is empty or names a seed twice — two runs of
+            one seed would write one model's files twice and count as two
+            reads of the test set while measuring the same thing once.
+    """
+    resolved = [int(seed) for seed in (config.FINAL_SEEDS if seeds is None else seeds)]
+    if not resolved:
+        raise ValueError("a final run needs at least one training seed")
+    if len(set(resolved)) != len(resolved):
+        raise ValueError(f"the final seeds {resolved} repeat a seed; each one trains one model")
+    return resolved
+
+
+def refuse_a_number_that_already_holds_another_seeding(
+    experiment: int, bands: Candidate, seeds: list[int]
+) -> None:
+    """Refuse to put a multi-seed result beside a single-seed one, or the reverse.
+
+    Neither would overwrite the other — the names differ — so the settings
+    guard never sees them.  But the number would then carry two answers about
+    the same held-out crops, and the unsuffixed one would say it was read once
+    while the `_seed` files said three.  One experiment number is one claim.
+
+    Raises:
+        ValueError: If this triplet already has a result of the other shape.
+    """
+    prefix = ga.experiment_prefix(experiment)
+    suffix = ga.band_suffix(bands)
+    single = config.TABLES_DIR / f"{prefix}_final_metrics_{suffix}.json"
+    several = sorted(config.TABLES_DIR.glob(f"{prefix}_final_metrics_{suffix}_seed*.json"))
+    if len(seeds) > 1 and single.exists():
+        raise ValueError(
+            f"{single.name} is a single-seed result of {prefix}, and {len(seeds)} seeds "
+            "read the held-out set that many times. Two claims cannot share one "
+            "experiment number. Use a new experiment number."
+        )
+    if len(seeds) == 1 and several:
+        raise ValueError(
+            f"{several[0].name} is part of a {len(several)}-seed result of {prefix}, and a "
+            "single-seed run beside it would claim one read of the held-out set. "
+            "Use a new experiment number."
+        )
 
 
 def refuse_a_number_an_earlier_protocol_owns(experiment: int) -> None:
@@ -265,11 +338,20 @@ RECORDED_SETTINGS = (
     "image_size",
     "device_type",
     "backbone_checkpoint",
+    # Not a setting that moves the number, but one that moves what the file
+    # claims: rewriting a seed's result under a shorter list would turn three
+    # reads of the held-out set into two.
+    "test_evaluation_count",
 )
 
 
 def run_settings(
-    bands: Candidate, device: torch.device, epochs: int, checkpoint: Path | None = None
+    bands: Candidate,
+    device: torch.device,
+    epochs: int,
+    seed: int,
+    read_count: int,
+    checkpoint: Path | None = None,
 ) -> dict:
     """What a rerun has to match to be a replay rather than a different result.
 
@@ -279,13 +361,14 @@ def run_settings(
     """
     return {
         "selected_band_indices": [int(band) for band in bands],
-        "seed": config.FINAL_SEED,
+        "seed": seed,
         "epochs": epochs,
         "batch_size": config.BATCH_SIZE,
         "learning_rate": config.LEARNING_RATE,
         "image_size": list(config.IMAGE_SIZE),
         "device_type": device.type,
         "backbone_checkpoint": checkpoint_identity(checkpoint),
+        "test_evaluation_count": read_count,
     }
 
 
@@ -369,6 +452,7 @@ def write_metrics(
     test: list[Hypercube],
     metrics: dict,
     nanometres: tuple[float, float, float],
+    seeds: list[int],
 ) -> None:
     """The one file that says what this model is and what it scored, once.
 
@@ -377,6 +461,12 @@ def write_metrics(
     changed something would show up as a diff.  `backbone_checkpoint` appears
     only when the model was given one, so a run without one still writes the
     file this protocol recorded.
+
+    `test_evaluation_count` is the length of `seeds`, never one per file: ten
+    seeds are ten trainings scored on the same held-out crops, and an artifact
+    that said "1" would claim a single measurement that was taken ten times.
+    `final_seeds` joins it only when there are several, for the same reason
+    `backbone_checkpoint` does — a single-seed run writes the 10 Sep file.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = checkpoint_identity(context.checkpoint)
@@ -386,9 +476,10 @@ def write_metrics(
                 "schema_version": 1,
                 **({} if checkpoint is None else {"backbone_checkpoint": checkpoint}),
                 "experiment": experiment,
+                **({} if len(seeds) == 1 else {"final_seeds": list(seeds)}),
                 "primary_metric": "weighted_f1",
                 "evaluation_scope": "held-out-test-once-after-final-training",
-                "test_evaluation_count": 1,
+                "test_evaluation_count": len(seeds),
                 "test_feedback_used": False,
                 "selected_band_indices": [int(band) for band in context.bands],
                 "selected_wavelengths_nm": list(nanometres),
@@ -419,6 +510,121 @@ def write_metrics(
     )
 
 
+# --- What a list of seeds measured -----------------------------------------
+
+
+# The four scalars of `classification_metrics`; per-class recall is a table and
+# is left to the per-seed files rather than averaged into a single number.
+SUMMARY_METRICS = ("weighted_f1", "macro_f1", "ordinal_mae", "quadratic_weighted_kappa")
+
+# The identity of a summary: the triplet, what every seed was trained under,
+# and which seeds they were.  A list in another order measured another thing.
+SUMMARY_RECORDED_SETTINGS = (
+    "selected_band_indices",
+    "final_seeds",
+    "epochs",
+    "batch_size",
+    "learning_rate",
+    "image_size",
+    "device_type",
+    "backbone_checkpoint",
+    "test_evaluation_count",
+)
+
+
+def summary_settings(
+    bands: Candidate,
+    device: torch.device,
+    epochs: int,
+    seeds: list[int],
+    checkpoint: Path | None = None,
+) -> dict:
+    """What a rerun of the whole list has to match for the summary to be a replay.
+
+    It is the per-seed contract with the one seed taken out and the whole list
+    put in: a summary belongs to the list, and a list of another length or in
+    another order summarizes something else.
+    """
+    settings = run_settings(bands, device, epochs, seeds[0], len(seeds), checkpoint)
+    settings.pop("seed")
+    return {**settings, "final_seeds": list(seeds)}
+
+
+def spread_over_seeds(values: list[float]) -> dict:
+    """Where the seeds landed on one metric: the mean and how far they sat from it.
+
+    The standard deviation is the sample one, over at least two seeds — a
+    summary is only written when there are several models to compare.  It is
+    spelled out rather than taken from `statistics.stdev`, which raises on an
+    undefined metric instead of carrying the NaN through: a kappa that has no
+    value must leave the other three metrics' summaries standing.
+
+    One undefined seed makes the whole summary of that metric undefined, min
+    and max included.  `min` and `max` would otherwise answer by where the NaN
+    happened to sit in the list, quoting two finite seeds as if all of them had
+    scored — and the same seeds in another order would write other bytes.
+    """
+    if any(math.isnan(value) for value in values):
+        return dict.fromkeys(("mean", "std", "min", "max"), math.nan)
+    mean = statistics.fmean(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return {"mean": mean, "std": math.sqrt(variance), "min": min(values), "max": max(values)}
+
+
+def write_final_summary(
+    path: Path,
+    experiment: int,
+    bands: Candidate,
+    nanometres: tuple[float, float, float],
+    scored: dict[int, dict],
+    device: torch.device,
+    epochs: int,
+    checkpoint: Path | None,
+) -> None:
+    """The one file that separates the noise of training from the noise of the split.
+
+    It is the headline of a multi-seed run and says, in the same breath, that
+    the held-out set was read once per seed.  Like the per-seed metrics it
+    carries no timestamp, so a replay of the same list writes the same bytes.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    seeds = list(scored)
+    identity = checkpoint_identity(checkpoint)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                **({} if identity is None else {"backbone_checkpoint": identity}),
+                "experiment": experiment,
+                "primary_metric": "weighted_f1",
+                "evaluation_scope": "held-out-test-once-per-seed-after-final-training",
+                "test_evaluation_count": len(seeds),
+                "test_feedback_used": False,
+                "final_seeds": seeds,
+                "selected_band_indices": [int(band) for band in bands],
+                "selected_wavelengths_nm": list(nanometres),
+                "epochs": epochs,
+                "batch_size": config.BATCH_SIZE,
+                "learning_rate": config.LEARNING_RATE,
+                "image_size": list(config.IMAGE_SIZE),
+                "device_type": device.type,
+                "per_seed": {
+                    str(seed): {name: scored[seed][name] for name in SUMMARY_METRICS}
+                    for seed in seeds
+                },
+                "metrics": {
+                    name: spread_over_seeds([scored[seed][name] for seed in seeds])
+                    for name in SUMMARY_METRICS
+                },
+                "libraries": ga.library_versions(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
 # --- One final model ------------------------------------------------------
 
 
@@ -428,96 +634,163 @@ def final_command(
     bands=None,
     epochs: int = config.NUM_EPOCHS,
     checkpoint: Path | None = None,
+    seeds=None,
     trainer=train_final_model,
     evaluator=predict_test,
     verbose: bool = True,
 ) -> None:
-    """Train the final model of one experiment number and score it once.
+    """Train the final model of one experiment number, once per seed, and score it.
 
-    `checkpoint` is resolved here rather than taken as given, so that
-    `config.BACKBONE_CHECKPOINT` applies to every caller and not only to the
-    command line.
+    `checkpoint` and `seeds` are resolved here rather than taken as given, so
+    that `config.BACKBONE_CHECKPOINT` and `config.FINAL_SEEDS` apply to every
+    caller and not only to the command line.
+
+    With one seed this is the 10 Sep run and writes that run's files.  With
+    several, every seed trains its own final model on the same train crops and
+    the same frozen normalization, and every artifact declares that the
+    held-out set was read once per seed.  All the models are trained and saved
+    before the test partition is opened, so ticket 07's order holds for the
+    last seed as strictly as for the first.
 
     Raises:
-        ValueError: If a checkpoint was asked for and is not there, if the
-            number belongs to an earlier protocol, if the bands are not a
-            triplet of this SpectralAxis, or if the trainer returns something
-            that is not a model with one history row per epoch.
+        ValueError: If a checkpoint was asked for and is not there, if the seed
+            list is empty or repeats a seed, if the number belongs to an
+            earlier protocol, if the bands are not a triplet of this
+            SpectralAxis, or if the trainer returns something that is not a
+            model with one history row per epoch.
     """
     checkpoint = checkpoint_path(checkpoint)
     refuse_a_number_an_earlier_protocol_owns(experiment)
+    seeds = resolve_seeds(seeds)
     device = ga.select_device()
     # Resolved before a single NPZ is opened: a missing summary or a band out of
     # range is a mistake worth hearing about now, not in three minutes.
     selected = tuple(int(band) for band in bands) if bands is not None else winner_bands(experiment)
     wavelengths = load_spectral_axis(config.SPECTRAL_AXES)
     nanometres = wavelengths_of(selected, wavelengths)
-    paths = final_paths(experiment, selected)
-    settings = run_settings(selected, device, epochs, checkpoint)
-    ga.refuse_a_rerun_that_would_not_reproduce(paths["metrics"], settings, RECORDED_SETTINGS)
+    # One seed keeps the unsuffixed names of the recorded run; several are told
+    # apart by the seed that trained them.
+    paths_of = {
+        seed: final_paths(experiment, selected, seed if len(seeds) > 1 else None) for seed in seeds
+    }
+    summary_path = final_summary_path(experiment, selected) if len(seeds) > 1 else None
+    refuse_a_number_that_already_holds_another_seeding(experiment, selected, seeds)
+    # Every guard before any training: a refusal on the last seed must not leave
+    # the first seed's model already trained, saved and half-recorded.
+    for seed in seeds:
+        ga.refuse_a_rerun_that_would_not_reproduce(
+            paths_of[seed]["metrics"],
+            run_settings(selected, device, epochs, seed, len(seeds), checkpoint),
+            RECORDED_SETTINGS,
+        )
+    if summary_path is not None:
+        ga.refuse_a_rerun_that_would_not_reproduce(
+            summary_path,
+            summary_settings(selected, device, epochs, seeds, checkpoint),
+            SUMMARY_RECORDED_SETTINGS,
+        )
 
     training = load_partition_crops(
         config.HYPERCUBES_MANIFEST, "train", wavelengths, verbose=verbose
     )
+    # Fitted once and shared: the normalization depends on the train crops and
+    # the triplet, never on the seed, so every seed trains under the same one.
     mean, std = fit_foreground_normalization(training, selected)
-    context = FinalTraining(
-        selected, training, mean, std, config.FINAL_SEED, device, epochs, checkpoint
-    )
+    contexts = {
+        seed: FinalTraining(selected, training, mean, std, seed, device, epochs, checkpoint)
+        for seed in seeds
+    }
     if verbose:
         print(f"candidate      {selected}")
         print("wavelengths_nm " + ", ".join(f"{value}" for value in nanometres))
         print(f"train crops    {len(training)} in {len({c.acquisition_id for c in training})} acquisitions")
         print(f"mean           {list(mean)}")
         print(f"std            {list(std)}")
-        print(f"device         {device}  |  epochs {epochs}  |  seed {context.seed}")
+        seeding = f"seed {seeds[0]}" if len(seeds) == 1 else f"seeds {seeds}"
+        print(f"device         {device}  |  epochs {epochs}  |  {seeding}")
         if checkpoint is not None:
             ga.print_checkpoint(checkpoint)
 
-    started = time.perf_counter()
-    model = trainer(context)
-    if not model.state or len(model.history) != epochs:
-        raise ValueError("the final trainer returned no weights, or not one history row per epoch")
-    paths["model"].parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state, paths["model"])
-    trained_in = time.perf_counter() - started
+    # Every model is held until the last one is trained, so that no held-out
+    # crop is opened while a seed is still training.  A ResNet50 state dict is
+    # about 100 MB on the CPU, so even ten seeds cost a gigabyte of RAM.
+    models = {}
+    for seed in seeds:
+        started = time.perf_counter()
+        model = trainer(contexts[seed])
+        if not model.state or len(model.history) != epochs:
+            raise ValueError(
+                f"the final trainer returned no weights for seed {seed}, "
+                "or not one history row per epoch"
+            )
+        paths_of[seed]["model"].parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state, paths_of[seed]["model"])
+        models[seed] = model
+        if verbose:
+            # Flushed: under nohup these lines are the record of when each model
+            # was frozen and when the held-out crops were first opened, and a
+            # line still sitting in a buffer says nothing about that order.
+            print(
+                f"model          {paths_of[seed]['model']} "
+                f"({time.perf_counter() - started:.1f} s)",
+                flush=True,
+            )
     if verbose:
-        # Flushed: under nohup these two lines are the record of when the model
-        # was frozen and when the held-out crops were first opened, and a line
-        # still sitting in a buffer says nothing about the order it happened in.
-        print(f"model          {paths['model']} ({trained_in:.1f} s)", flush=True)
         print("--- the test set is opened for the first time, after the save ---", flush=True)
 
     test = load_partition_crops(config.HYPERCUBES_MANIFEST, "test", wavelengths, verbose=verbose)
-    predictions = evaluator(
-        FinalEvaluation(selected, test, mean, std, model.state, device)
-    )
-    if len(predictions) != len(test) or any(
-        type(value) is not int or value not in range(config.NUM_CLASSES) for value in predictions
-    ):
-        raise ValueError("the final evaluator returned invalid predictions")
-    metrics = classification_metrics(
-        [int(crop.severity_class) for crop in test], predictions
-    )
+    scored = {}
+    for seed in seeds:
+        paths = paths_of[seed]
+        model = models[seed]
+        predictions = evaluator(
+            FinalEvaluation(selected, test, mean, std, model.state, device)
+        )
+        if len(predictions) != len(test) or any(
+            type(value) is not int or value not in range(config.NUM_CLASSES)
+            for value in predictions
+        ):
+            raise ValueError(f"the final evaluator returned invalid predictions for seed {seed}")
+        metrics = classification_metrics(
+            [int(crop.severity_class) for crop in test], predictions
+        )
+        scored[seed] = metrics
 
-    # ga.py owns the predictions schema; ticket 08's bootstrap reads both files.
-    ga.write_predictions(paths["predictions"], test, predictions, exclusive=False)
-    write_confusion_matrix(paths["confusion"], metrics["confusion_matrix"])
-    write_history(paths["history"], model.history)
-    write_metrics(paths["metrics"], experiment, context, test, metrics, nanometres)
-    plot_confusion_matrix(paths["confusion_figure"], metrics["confusion_matrix"], nanometres)
-    plot_training_history(paths["history_figure"], model.history, nanometres)
+        # ga.py owns the predictions schema; ticket 08's bootstrap reads both files.
+        ga.write_predictions(paths["predictions"], test, predictions, exclusive=False)
+        write_confusion_matrix(paths["confusion"], metrics["confusion_matrix"])
+        write_history(paths["history"], model.history)
+        write_metrics(paths["metrics"], experiment, contexts[seed], test, metrics, nanometres, seeds)
+        plot_confusion_matrix(paths["confusion_figure"], metrics["confusion_matrix"], nanometres)
+        plot_training_history(paths["history_figure"], model.history, nanometres)
 
-    if verbose:
-        for name in ("weighted_f1", "macro_f1", "ordinal_mae", "quadratic_weighted_kappa"):
-            print(f"{name:<14} {metrics[name]!r}")
-        for name, value in metrics["per_class_recall"].items():
-            print(f"recall {name:<7} {value!r}")
-        print(f"confusion      {metrics['confusion_matrix']}")
-        print(f"test crops     {len(test)} in {len({c.acquisition_id for c in test})} acquisitions")
-        for name in ("metrics", "confusion", "predictions", "history"):
-            print(f"{name:<14} {paths[name]}")
-        for name in ("confusion_figure", "history_figure"):
-            print(f"{name:<14} {paths[name]}")
+        if verbose:
+            if len(seeds) > 1:
+                print(f"--- seed {seed} ---")
+            for name in SUMMARY_METRICS:
+                print(f"{name:<14} {metrics[name]!r}")
+            for name, value in metrics["per_class_recall"].items():
+                print(f"recall {name:<7} {value!r}")
+            print(f"confusion      {metrics['confusion_matrix']}")
+            print(f"test crops     {len(test)} in {len({c.acquisition_id for c in test})} acquisitions")
+            for name in ("metrics", "confusion", "predictions", "history"):
+                print(f"{name:<14} {paths[name]}")
+            for name in ("confusion_figure", "history_figure"):
+                print(f"{name:<14} {paths[name]}")
+
+    if summary_path is not None:
+        write_final_summary(
+            summary_path, experiment, selected, nanometres, scored, device, epochs, checkpoint
+        )
+        if verbose:
+            print(f"--- {len(seeds)} seeds, {len(seeds)} reads of the held-out set ---")
+            for name in SUMMARY_METRICS:
+                across = spread_over_seeds([scored[seed][name] for seed in seeds])
+                print(
+                    f"{name:<14} mean {across['mean']!r}  std {across['std']!r}  "
+                    f"min {across['min']!r}  max {across['max']!r}"
+                )
+            print(f"summary        {summary_path}")
 
 
 def main(argv=None) -> int:
@@ -539,6 +812,14 @@ def main(argv=None) -> int:
         help="a pretrained backbone to fine-tune from; the default is"
         " config.BACKBONE_CHECKPOINT, and it is recorded beside the result",
     )
+    parser.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        metavar="SEED",
+        help="the training seeds, one final model and one read of the held-out set"
+        " each; the default is config.FINAL_SEEDS",
+    )
     arguments = parser.parse_args(argv)
     try:
         final_command(
@@ -546,6 +827,7 @@ def main(argv=None) -> int:
             bands=arguments.bands,
             epochs=arguments.epochs,
             checkpoint=arguments.checkpoint,
+            seeds=arguments.seeds,
         )
     except ValueError as refusal:
         print(f"train_final.py: {refusal}", file=sys.stderr)

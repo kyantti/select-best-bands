@@ -17,6 +17,9 @@
 #   --epochs                                     ga.py and train_final.py
 #   --bands R G B                                train_final.py and bootstrap.py
 #   --resamples, --seed                          bootstrap.py
+#
+# `--checkpoint` and `--seeds` are deliberately not routed; see the refusals
+# below and the note in CLAUDE.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -62,6 +65,20 @@ while [ $# -gt 0 ]; do
       exit 1 ;;
   esac
 done
+
+# `--seeds` is not routed, and a multi-seed `config.FINAL_SEEDS` cannot go
+# through this chain either: it ends in bootstrap.py, which resamples one set of
+# test predictions, and a run of several seeds writes one set per seed.  Whether
+# such a run has one interval per seed or one over the pooled predictions is an
+# open protocol decision.  Refusing in a second beats dying at the last step of a
+# 22-hour chain, so the count is read before the split.
+FINAL_SEED_COUNT="$(uv run python -c 'import config; print(len(config.FINAL_SEEDS))')"
+if [ "$FINAL_SEED_COUNT" -ne 1 ]; then
+  echo "run.sh: config.FINAL_SEEDS names ${FINAL_SEED_COUNT} seeds, and this chain ends in" >&2
+  echo "        bootstrap.py, which resamples one set of test predictions." >&2
+  echo "        Run train_final.py by hand for a multi-seed final model." >&2
+  exit 1
+fi
 
 mkdir -p out/logs
 

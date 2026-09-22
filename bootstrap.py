@@ -204,7 +204,12 @@ def bootstrap_paths(experiment: int, bands: Candidate) -> dict[str, Path]:
 
 
 def published_triplets(experiment: int) -> list[Candidate]:
-    """Every band triplet experiment `N` has a final model for, from its metrics files."""
+    """Every band triplet experiment `N` has a final model for, from its metrics files.
+
+    Each triplet appears once however many files name it: a multi-seed run of
+    `train_final.py` writes one metrics file per seed, and three files of one
+    triplet are one triplet, not three to choose between.
+    """
     prefix = ga.experiment_prefix(experiment)
     found = []
     for path in sorted(config.TABLES_DIR.glob(f"{prefix}_final_metrics_*.json")):
@@ -212,7 +217,9 @@ def published_triplets(experiment: int) -> list[Candidate]:
             recorded = json.loads(path.read_text())["selected_band_indices"]
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as unreadable:
             raise ValueError(f"cannot read the bands from {path.name}: {unreadable}") from unreadable
-        found.append(tuple(int(band) for band in recorded))
+        triplet = tuple(int(band) for band in recorded)
+        if triplet not in found:
+            found.append(triplet)
     return found
 
 
@@ -263,6 +270,31 @@ def read_predictions(path: Path) -> TestPredictions:
     return TestPredictions(*(np.array([row[column] for row in rows]) for column in columns))
 
 
+def refuse_a_multi_seed_result(experiment: int, bands: Candidate, predictions: Path) -> None:
+    """Say so plainly when the triplet was trained under several seeds.
+
+    This script resamples one set of per-crop predictions, and a run of several
+    seeds wrote one set per seed.  Which interval such a run has — one per
+    seed, or one over the pooled predictions — is a protocol decision nobody
+    has taken yet, so refuse rather than guess, and refuse with the names of
+    the files that are actually there.
+
+    Raises:
+        ValueError: If the unsuffixed predictions are absent and per-seed ones exist.
+    """
+    if predictions.exists():
+        return
+    prefix = ga.experiment_prefix(experiment)
+    per_seed = sorted(config.TABLES_DIR.glob(f"{prefix}_test_predictions_{ga.band_suffix(bands)}_seed*.csv"))
+    if per_seed:
+        raise ValueError(
+            f"{prefix} trained {ga.band_suffix(bands)} under {len(per_seed)} seeds "
+            f"({', '.join(path.name for path in per_seed)}), and this script resamples "
+            "one set of predictions. Whether such a run has one interval per seed or one "
+            "over the pooled predictions is not decided; bootstrap.py cannot choose it."
+        )
+
+
 def load_final_result(experiment: int, bands=None) -> FinalResult:
     """Everything about the published model whose result is being quoted.
 
@@ -271,6 +303,7 @@ def load_final_result(experiment: int, bands=None) -> FinalResult:
     """
     selected = final_bands(experiment, bands)
     paths = bootstrap_paths(experiment, selected)
+    refuse_a_multi_seed_result(experiment, selected, paths["predictions"])
     try:
         nanometres = json.loads(paths["metrics"].read_text())["selected_wavelengths_nm"]
     except (OSError, json.JSONDecodeError, KeyError) as unreadable:
