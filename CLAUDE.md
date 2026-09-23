@@ -40,6 +40,26 @@ ResNet50 on the resulting RGB images. See `README.md` for the research context.
 - **Do not change the GA or CNN hyperparameters** in `config.py` unless that is the feature. Past results depend on them.
 - Use `uv run ...` for every Python invocation. Never `pip install` into `.venv`.
 
+## Phase 2: the three switches, all defaulting to the 10 Sep behaviour
+
+Phase 1 (tickets 01–10) is the bit-for-bit port of the 10 Sep 2026 run. Phase 2
+(11–17) adds improvements for the *next* run, and **every one of them is off by
+default**. A run that names none of these reproduces experiment 21 exactly;
+that is what makes a difference in a phase-2 run attributable to the
+improvement rather than to the port, and it is re-verified by ticket 17.
+
+| Constant | Default | Turning it on |
+|---|---|---|
+| `VALIDATION_BALANCE` | `"acquisition_stratified"`, the 10 Sep inner boundary | `"crop_count_balanced"`, or `split_dataset.py --validation-balance crop_count_balanced`. Spreads the validation crops evenly over the classes; the train/test boundary is untouched. |
+| `BACKBONE_CHECKPOINT` | `None`, ImageNet and nothing else — no checkpoint call is made at all | a `pretrain.py` path, or `--checkpoint PATH` on `ga.py` / `train_final.py`. Two checkpoints, never one: `fit` for the search, `train` for the final model. Part of the fitness contract. |
+| `FINAL_SEEDS` | `[2718]`, one final training run and one test read | a list, or `train_final.py --seeds S...`. One model per seed, `_seed<N>` files plus `exp_NN_final_summary_*.json`; every artifact declares the read count as the length of the list. |
+
+**Never mix phase 1 and phase 2 in one run without re-verifying the defaults
+first** — the five checks are the `## Evidence` of
+`.scratch/protocolo-80-20/issues/17-*`, and README's "The phase-2 run" section
+has them as commands. A run that switches anything on takes a new experiment
+number, and **launching the long run is Pablo's, not an agent's.**
+
 ## Verification and Definition of Done
 
 ```bash

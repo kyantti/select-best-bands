@@ -216,7 +216,7 @@ LEARNING_RATE = 0.001
 IMAGE_SIZE = (64, 128)
 
 # Contrastive pretraining (pretrain.py only; off unless a checkpoint is named)
-BACKBONE_CHECKPOINT = None     # ImageNet and nothing else, the 10 Sep behaviour
+BACKBONE_CHECKPOINT = None     # a phase-2 switch; see the table below
 PRETRAIN_EPOCHS = 200
 PRETRAIN_BATCH_SIZE = 128
 PRETRAIN_TEMPERATURE = 0.2     # NT-Xent
@@ -228,6 +228,128 @@ BOOTSTRAP_RESAMPLES = 5000     # whole acquisitions, not crops
 Every genetic operator is followed by a repair that guarantees three distinct
 in-range bands without reordering them: that is what keeps the population from
 collapsing, as it did in the 20 v1 studies.
+
+### The three phase-2 switches
+
+Three constants turn on the improvements built after experiment 21. **Every one
+of them defaults to the 10 Sep behaviour**, so a run that names none reproduces
+experiment 21 exactly. That is the whole point of the defaults: if an
+improvement could move the number while switched off, a difference in a phase-2
+run could be the port rather than the improvement, and the bit-for-bit
+verification of phase 1 would be worth nothing.
+
+```python
+VALIDATION_BALANCE = "acquisition_stratified"   # the 10 Sep train/validation boundary
+BACKBONE_CHECKPOINT = None                      # ImageNet and nothing else
+FINAL_SEEDS = [2718]                            # one final training run, one test read
+```
+
+| Constant | Default, and what it means | Turning it on |
+|---|---|---|
+| `VALIDATION_BALANCE` | `"acquisition_stratified"` — the 10 Sep inner boundary. Its validation weights C0 and C2 about 2.5× more than C1 and C3, and the fitness is weighted F1. | `"crop_count_balanced"` picks the admissible subset of train acquisitions whose crops spread most evenly over the classes (`VALIDATION_BALANCE_TARGET_RATIO = 1.5`). `split_dataset.py --validation-balance crop_count_balanced` sets it for one run. The train/test boundary, the grouping by acquisition and one acquisition per class on each side are untouched either way. |
+| `BACKBONE_CHECKPOINT` | `None` — ImageNet weights and nothing else, so no checkpoint call is made at all and the model, the order it is built in and the random stream its head is drawn from are the recorded run's. | A path to a `pretrain.py` checkpoint, or `--checkpoint PATH` on `ga.py` and `train_final.py`. **Two checkpoints, never one** (see above). A checkpoint is part of the fitness contract, so a cache filled without one refuses it. |
+| `FINAL_SEEDS` | `[2718]` — the single final training run of 10 Sep. Every file `train_final.py` writes is that run's, byte for byte. | A list, or `--seeds S...` on `train_final.py`: one final model per seed, each writing its own `_seed<N>` model, tables and figures, plus `exp_NN_final_summary_*.json` with the mean and the spread. Every artifact declares `test_evaluation_count` as the length of the list — **ten seeds are ten reads of the held-out set and no file of such a run may claim one**. Not routed through `run.sh`; see below. |
+
+## 🚀 The phase-2 run
+
+**Never mix phase 1 and phase 2 in one run without re-verifying the defaults
+first.** Before any improvement is switched on, the five checks below have to
+give the phase-1 numbers again with all three constants at their defaults —
+that is what proves each improvement is off unless asked for, and therefore
+that a difference in the long run comes from the improvement and not from the
+port. The checks are the `## Evidence` of `.scratch/protocolo-80-20/issues/17-*`:
+
+```bash
+uv run python split_dataset.py                       # == tests/data/reference_evaluation_partitions.csv
+uv run python ga.py --evaluate 366 262 225 \
+  --predictions /tmp/validation_predictions.csv      # seed 3104252108, weighted F1 0.8700979843225085
+uv run python train_final.py 21 --bands 366 262 225  # weighted F1 0.722142952443074
+uv run python bootstrap.py 21                        # 0.722, 95 % CI [0.645, 0.848]
+uv run python ga.py 21 --no-evaluate                 # same winner, same per-generation history
+uv run pytest -q                                     # the protocol tests, no GPU
+```
+
+Every artifact of experiment 21 comes back byte for byte except one field:
+`exp_21_ga_summary.json` records `elapsed_seconds`, which is wall clock, so the
+last check leaves `git status` dirty over a stopwatch reading. Revert it —
+`git checkout -- out/tables/exp_21_ga_summary.json` — and do not commit it.
+
+A phase-2 run then takes **a new experiment number** — 22 onwards — because
+changing a constant makes it incomparable with 21. `run.sh` cannot carry it:
+`--checkpoint` and `--seeds` are deliberately not routed (the search and the
+final model take *different* backbones, and the chain ends in `bootstrap.py`,
+which resamples one set of test predictions). So the phase-2 run is its steps by
+hand, and **launching it is Pablo's, not an agent's**:
+
+```bash
+# 1. the partition.  Set config.VALIDATION_BALANCE and commit it — do not pass
+#    --validation-balance here.  The flag leaves the constant lying, and the
+#    constant is what pretrain.py records and what run.sh redraws under.
+$EDITOR config.py          # VALIDATION_BALANCE = "crop_count_balanced"
+uv run python split_dataset.py
+
+# 2. the two backbones.  REQUIRED if step 1 moved the boundary: out/models/
+#    already holds checkpoints pretrained against the 10 Sep boundary, and
+#    --force is what says you know you are replacing them.  The SimCLR loops
+#    are 179 s and 196 s on an A100; decompressing the crops takes longer.
+uv run python pretrain.py --cohort fit --force     # the 22 train-fit acquisitions
+uv run python pretrain.py --cohort train --force   # all 28 train acquisitions
+
+# 3. CHECK FOR LEAKAGE BEFORE SPENDING 22 HOURS.  Nothing in ga.py enforces
+#    this: it takes whatever --checkpoint names.
+uv run python - <<'EOF'
+import csv, json, config
+seen = set(json.load(open("out/models/pretrain_fit.json"))["acquisition_ids"])
+rows = list(csv.DictReader(open(config.PARTITIONS)))
+validation = {r["acquisition_id"] for r in rows if r["selection_partition"] == "validation"}
+test = {r["acquisition_id"] for r in rows if r["partition"] == "test"}
+print("validation acquisitions the fit backbone already saw:", len(validation & seen))
+print("test acquisitions it saw:", len(test & seen))
+assert not (validation & seen) and not (test & seen), "contaminated backbone"
+EOF
+
+# 4. the search: hours, so detached.  For the ImageNet arm, drop --checkpoint
+#    here and skip steps 2 and 3 entirely.
+nohup env CUDA_VISIBLE_DEVICES=1 uv run python -u ga.py 22 \
+  --checkpoint out/models/pretrain_fit.pt > out/logs/experiment_22.log 2>&1 &
+tail -f out/logs/experiment_22.log
+wc -l out/tables/exp_22_candidates.csv      # one row per candidate evaluated so far
+
+# 5. the final model, from the *other* backbone
+CUDA_VISIBLE_DEVICES=1 uv run python train_final.py 22 \
+  --checkpoint out/models/pretrain_train.pt
+
+# 6. the interval, and where the errors fall.  No GPU.
+uv run python bootstrap.py 22
+uv run python analyze_test_errors.py 22
+```
+
+**Steps 1 and 2 are one decision, not two.** A backbone pretrained under one
+validation boundary has seen acquisitions that become *validation* under the
+other, and its fitness would then be scored on crops it was adapted to. The
+checkpoints in `out/models/` today were written against the 10 Sep boundary: of
+the 6 validation acquisitions `crop_count_balanced` chooses, **5 are inside the
+22 that `pretrain_fit.pt` saw**. Moving the boundary without rebuilding the
+checkpoints is a leak, and `ga.py` will not catch it — hence step 3.
+
+**Do not run `run.sh` while experiment 22 is in flight.** Its first step is a
+bare `split_dataset.py`, which redraws the shared
+`data/evaluation_partitions.csv`; if the constant has moved since, the candidate
+cache of the run in flight stops matching and the resume refuses every row.
+
+**Expect ~22 h** for step 4 on an A100. **If it dies, relaunch the identical
+command**: `ga.py` restores `out/tables/exp_22_candidates.csv` and replays every
+candidate already evaluated, training only the missing ones. The cache refuses
+rows written under another data identity, another seed or another fitness
+contract — the checkpoint among them — so a resume that would not reproduce the
+run stops rather than quietly mixing two.
+
+**Whether step 2's checkpoint belongs in the run at all is not settled.**
+`.scratch/protocolo-80-20/issues/15-*` is the paired control/treatment trial
+that decides it, against a rule frozen before the numbers exist (+0.010 pooled
+and positive for at least 6 of 8 candidates). It has not been run. Until it
+has, the ImageNet arm — step 3 without `--checkpoint` — is the run this
+protocol is verified for.
 
 ## 📊 Results
 
